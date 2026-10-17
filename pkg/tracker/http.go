@@ -35,8 +35,13 @@ type AnnounceResponse struct {
 	Peers    []Peer
 }
 
-// HTTPAnnounce queries an HTTP/HTTPS tracker for peers.
+// HTTPAnnounce queries an HTTP/HTTPS tracker for peers using a default HTTP client.
 func HTTPAnnounce(params AnnounceParams) (*AnnounceResponse, error) {
+	return HTTPAnnounceWithClient(params, &http.Client{Timeout: 15 * time.Second})
+}
+
+// HTTPAnnounceWithClient queries an HTTP/HTTPS tracker for peers using the provided HTTP client.
+func HTTPAnnounceWithClient(params AnnounceParams, client *http.Client) (*AnnounceResponse, error) {
 	u, err := url.Parse(params.AnnounceURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid announce url: %w", err)
@@ -61,7 +66,9 @@ func HTTPAnnounce(params AnnounceParams) (*AnnounceResponse, error) {
 	)
 	u.RawQuery = rawQuery
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	resp, err := client.Get(u.String())
 	if err != nil {
 		return nil, fmt.Errorf("tracker request failed: %w", err)

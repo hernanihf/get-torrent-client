@@ -1,0 +1,6 @@
+bin/
+downloads/
+config/
+**/config/
+.DS_Store
+*.tmp

@@ -95,31 +95,80 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dispatch(req Request) Response {
 	switch req.Method {
 	case "session-get":
+		downloadDir := "/Downloads"
+		var speedDown, speedUp int64
+		if s.engine != nil {
+			downloadDir = s.engine.DownloadDir
+			speedDown = s.engine.SpeedLimitDown
+			speedUp = s.engine.SpeedLimitUp
+		}
+
 		return Response{
 			Result: "success",
 			Tag:    req.Tag,
 			Arguments: map[string]any{
-				"version":             "4.0.0 (get-torrent)",
-				"rpc-version":         17,
-				"rpc-version-minimum": 14,
-				"download-dir":        "/Downloads",
-				"speed-limit-down":    0,
-				"speed-limit-up":      0,
+				"version":                  "4.0.0 (get-torrent)",
+				"rpc-version":              17,
+				"rpc-version-minimum":      14,
+				"download-dir":             downloadDir,
+				"download-dir-free-space":  100000000000,
+				"speed-limit-down":         speedDown,
+				"speed-limit-down-enabled": speedDown > 0,
+				"speed-limit-up":           speedUp,
+				"speed-limit-up-enabled":   speedUp > 0,
+				"peer-port":                9091,
+				"port-is-open":             true,
 			},
 		}
+
+	case "session-set":
+		if s.engine != nil {
+			if newDir, ok := req.Arguments["download-dir"].(string); ok && newDir != "" {
+				s.engine.DownloadDir = newDir
+			}
+			if downLimit, ok := req.Arguments["speed-limit-down"].(float64); ok {
+				s.engine.SpeedLimitDown = int64(downLimit)
+			}
+			if upLimit, ok := req.Arguments["speed-limit-up"].(float64); ok {
+				s.engine.SpeedLimitUp = int64(upLimit)
+			}
+			_ = s.engine.SaveState()
+		}
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+		}
+
+	case "port-test":
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+			Arguments: map[string]any{
+				"port-is-open": true,
+			},
+		}
+
 	case "torrent-get":
 		var torrentsList []map[string]any
 		if s.engine != nil {
 			for _, t := range s.engine.ListTorrents() {
+				var percentDone float64
+				if t.PieceManager != nil {
+					pct, _ := t.PieceManager.Progress()
+					percentDone = pct / 100.0
+				}
 				torrentsList = append(torrentsList, map[string]any{
 					"id":             t.ID,
 					"name":           t.Meta.Name,
 					"status":         t.State,
 					"totalSize":      t.Meta.TotalLength,
+					"percentDone":    percentDone,
 					"leftUntilDone":  t.Left,
 					"peersConnected": t.ActivePeers,
 					"rateDownload":   0,
 					"rateUpload":     0,
+					"uploadedEver":   t.Uploaded,
+					"downloadedEver": t.Downloaded,
 				})
 			}
 		}
@@ -133,6 +182,7 @@ func (s *Server) dispatch(req Request) Response {
 				"torrents": torrentsList,
 			},
 		}
+
 	case "torrent-add":
 		filename, _ := req.Arguments["filename"].(string)
 		if filename != "" && s.engine != nil {
@@ -143,6 +193,7 @@ func (s *Server) dispatch(req Request) Response {
 					Tag:    req.Tag,
 				}
 			}
+			_ = s.engine.SaveState()
 			return Response{
 				Result: "success",
 				Tag:    req.Tag,
@@ -158,12 +209,93 @@ func (s *Server) dispatch(req Request) Response {
 			Result: "filename required",
 			Tag:    req.Tag,
 		}
+
+	case "torrent-start", "torrent-start-now":
+		ids := s.parseIDs(req.Arguments)
+		for _, id := range ids {
+			_ = s.engine.StartTorrent(id)
+		}
+		if s.engine != nil {
+			_ = s.engine.SaveState()
+		}
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+		}
+
+	case "torrent-stop":
+		ids := s.parseIDs(req.Arguments)
+		for _, id := range ids {
+			_ = s.engine.StopTorrent(id)
+		}
+		if s.engine != nil {
+			_ = s.engine.SaveState()
+		}
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+		}
+
+	case "torrent-remove":
+		ids := s.parseIDs(req.Arguments)
+		deleteFiles, _ := req.Arguments["delete-local-data"].(bool)
+		for _, id := range ids {
+			_ = s.engine.RemoveTorrent(id, deleteFiles)
+		}
+		if s.engine != nil {
+			_ = s.engine.SaveState()
+		}
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+		}
+
+	case "torrent-set":
+		return Response{
+			Result: "success",
+			Tag:    req.Tag,
+		}
+
 	default:
 		log.Printf("Unknown or unimplemented RPC method: %s", req.Method)
 		return Response{
 			Result: fmt.Sprintf("method '%s' not implemented", req.Method),
 			Tag:    req.Tag,
 		}
+	}
+}
+
+func (s *Server) parseIDs(args map[string]any) []int {
+	if s.engine == nil {
+		return nil
+	}
+	raw, exists := args["ids"]
+	if !exists || raw == nil {
+		all := s.engine.ListTorrents()
+		res := make([]int, len(all))
+		for i, t := range all {
+			res[i] = t.ID
+		}
+		return res
+	}
+
+	switch v := raw.(type) {
+	case float64:
+		return []int{int(v)}
+	case int:
+		return []int{v}
+	case []any:
+		var res []int
+		for _, item := range v {
+			if num, ok := item.(float64); ok {
+				res = append(res, int(num))
+			} else if num, ok := item.(int); ok {
+				res = append(res, num)
+			}
+		}
+		return res
+	default:
+		return nil
 	}
 }
 

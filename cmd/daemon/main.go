@@ -14,6 +14,7 @@ import (
 func main() {
 	rpcAddr := flag.String("rpc-addr", "127.0.0.1:9091", "Address for Transmission RPC server")
 	downloadDir := flag.String("download-dir", "./downloads", "Directory to save completed torrents")
+	configDir := flag.String("config-dir", "./config", "Directory to store session state and resume data")
 	port := flag.Uint("port", 6881, "BitTorrent peer listen port")
 	flag.Parse()
 
@@ -22,7 +23,13 @@ func main() {
 	log.Println("==================================================")
 
 	eng := engine.NewEngine(*downloadDir, uint16(*port))
+	eng.ConfigDir = *configDir
 	log.Printf("[Daemon] Initialized BitTorrent Engine (PeerID: %s, Port: %d)", string(eng.PeerID[:8]), *port)
+
+	// Restore prior session state and resume torrents if available
+	if err := eng.LoadState(); err != nil {
+		log.Printf("[Daemon] Notice: Could not load prior session: %v", err)
+	}
 
 	server := rpc.NewServer(*rpcAddr, eng)
 
@@ -40,4 +47,9 @@ func main() {
 	<-sigChan
 
 	log.Println("Shutting down get-torrent daemon gracefully...")
+	if err := eng.SaveState(); err != nil {
+		log.Printf("[Daemon] Error saving session state: %v", err)
+	} else {
+		log.Println("[Daemon] Session state saved successfully.")
+	}
 }

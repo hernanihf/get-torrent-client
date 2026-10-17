@@ -19,6 +19,8 @@ type Conn struct {
 	Conn        net.Conn
 	Choked      bool
 	Interested  bool
+	AmChoking   bool
+	AmInterested bool
 	Bitfield    Bitfield
 	PeerID      [20]byte
 	InfoHash    [20]byte
@@ -59,12 +61,14 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 	_ = netConn.SetDeadline(time.Time{})
 
 	c := &Conn{
-		Conn:       netConn,
-		Choked:     true, // Peer starts out choking us
-		Interested: false,
-		PeerID:     remoteHS.PeerID,
-		InfoHash:   infoHash,
-		RemotePeer: p,
+		Conn:         netConn,
+		Choked:       true, // Peer starts out choking us
+		Interested:   false,
+		AmChoking:    true, // We start out choking the peer
+		AmInterested: false,
+		PeerID:       remoteHS.PeerID,
+		InfoHash:     infoHash,
+		RemotePeer:   p,
 	}
 
 	// Read initial bitfield if peer sends one immediately
@@ -124,13 +128,31 @@ func (c *Conn) SendNotInterested() error {
 
 // SendUnchoke unchokes the remote peer.
 func (c *Conn) SendUnchoke() error {
+	c.AmChoking = false
 	id := MsgUnchoke
+	return c.SendMessage(&Message{ID: &id})
+}
+
+// SendChoke chokes the remote peer.
+func (c *Conn) SendChoke() error {
+	c.AmChoking = true
+	id := MsgChoke
 	return c.SendMessage(&Message{ID: &id})
 }
 
 // SendRequest asks the peer for a block of data (typically 16 KB).
 func (c *Conn) SendRequest(index, begin, length int) error {
 	return c.SendMessage(FormatRequest(index, begin, length))
+}
+
+// SendPiece transmits a block of data to the peer in response to a request.
+func (c *Conn) SendPiece(index, begin int, data []byte) error {
+	return c.SendMessage(FormatPiece(index, begin, data))
+}
+
+// SendCancel transmits a cancel message for a pending block request.
+func (c *Conn) SendCancel(index, begin, length int) error {
+	return c.SendMessage(FormatCancel(index, begin, length))
 }
 
 // ReadMsg reads the next incoming message and updates connection state.

@@ -85,6 +85,54 @@ func ParsePiece(expectedIndex int, targetBuf []byte, msg *Message) (int, error) 
 	return len(data), nil
 }
 
+// FormatPiece builds a MsgPiece (ID 7) message to send block data to a peer.
+func FormatPiece(index, begin int, data []byte) *Message {
+	payload := make([]byte, 8+len(data))
+	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
+	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
+	copy(payload[8:], data)
+	id := MsgPiece
+	return &Message{ID: &id, Payload: payload}
+}
+
+// FormatCancel builds a MsgCancel (ID 8) message to cancel a pending block request.
+func FormatCancel(index, begin, length int) *Message {
+	payload := make([]byte, 12)
+	binary.BigEndian.PutUint32(payload[0:4], uint32(index))
+	binary.BigEndian.PutUint32(payload[4:8], uint32(begin))
+	binary.BigEndian.PutUint32(payload[8:12], uint32(length))
+	id := MsgCancel
+	return &Message{ID: &id, Payload: payload}
+}
+
+// ParseRequest extracts index, begin, and length from a MsgRequest payload.
+func ParseRequest(msg *Message) (int, int, int, error) {
+	if msg.ID == nil || *msg.ID != MsgRequest {
+		return 0, 0, 0, errors.New("expected request message")
+	}
+	if len(msg.Payload) != 12 {
+		return 0, 0, 0, fmt.Errorf("expected request payload length 12, got %d", len(msg.Payload))
+	}
+	index := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
+	begin := int(binary.BigEndian.Uint32(msg.Payload[4:8]))
+	length := int(binary.BigEndian.Uint32(msg.Payload[8:12]))
+	return index, begin, length, nil
+}
+
+// ParseCancel extracts index, begin, and length from a MsgCancel payload.
+func ParseCancel(msg *Message) (int, int, int, error) {
+	if msg.ID == nil || *msg.ID != MsgCancel {
+		return 0, 0, 0, errors.New("expected cancel message")
+	}
+	if len(msg.Payload) != 12 {
+		return 0, 0, 0, fmt.Errorf("expected cancel payload length 12, got %d", len(msg.Payload))
+	}
+	index := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
+	begin := int(binary.BigEndian.Uint32(msg.Payload[4:8]))
+	length := int(binary.BigEndian.Uint32(msg.Payload[8:12]))
+	return index, begin, length, nil
+}
+
 // Serialize converts a Message into its wire format:
 // <4 bytes length><1 byte ID (optional)><payload>
 func (m *Message) Serialize() []byte {

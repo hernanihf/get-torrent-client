@@ -1,7 +1,6 @@
 package peer
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"

@@ -1,14 +1,20 @@
 package tracker
 
 import (
+	"bytes"
 	"fmt"
-	"net"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/hernan/get-torrent/pkg/bencode"
 )
+
+type mockTransport func(req *http.Request) (*http.Response, error)
+
+func (m mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m(req)
+}
 
 func TestUnmarshalPeers(t *testing.T) {
 	// 2 peers: 127.0.0.1:6881 and 192.168.1.50:51413
@@ -37,7 +43,6 @@ func TestUnmarshalPeers(t *testing.T) {
 }
 
 func TestHTTPAnnounce(t *testing.T) {
-	// Mock HTTP tracker server
 	peerBytes := []byte{10, 0, 0, 1, 0x1F, 0x90} // 10.0.0.1:8080
 	mockResp := map[string]any{
 		"interval": int64(1800),
@@ -48,14 +53,18 @@ func TestHTTPAnnounce(t *testing.T) {
 		t.Fatalf("failed encoding mock bencode: %v", err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write(encodedResp)
-	}))
-	defer server.Close()
+	mockClient := &http.Client{
+		Transport: mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(encodedResp)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
 
 	params := AnnounceParams{
-		AnnounceURL: server.URL,
+		AnnounceURL: "http://tracker.example.com/announce",
 		InfoHash:    [20]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
 		PeerID:      [20]byte{'-', 'G', 'T', '0', '0', '0', '1', '-', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
 		Port:        6881,
@@ -63,7 +72,7 @@ func TestHTTPAnnounce(t *testing.T) {
 		Compact:     true,
 	}
 
-	resp, err := HTTPAnnounce(params)
+	resp, err := HTTPAnnounceWithClient(params, mockClient)
 	if err != nil {
 		t.Fatalf("HTTPAnnounce failed: %v", err)
 	}
@@ -88,16 +97,21 @@ func TestHTTPAnnounceFailure(t *testing.T) {
 	}
 	encodedResp, _ := bencode.Encode(mockResp)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(encodedResp)
-	}))
-	defer server.Close()
-
-	params := AnnounceParams{
-		AnnounceURL: server.URL,
+	mockClient := &http.Client{
+		Transport: mockTransport(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(encodedResp)),
+				Header:     make(http.Header),
+			}, nil
+		}),
 	}
 
-	_, err := HTTPAnnounce(params)
+	params := AnnounceParams{
+		AnnounceURL: "http://tracker.example.com/announce",
+	}
+
+	_, err := HTTPAnnounceWithClient(params, mockClient)
 	if err == nil {
 		t.Fatalf("expected error from tracker failure, got nil")
 	}

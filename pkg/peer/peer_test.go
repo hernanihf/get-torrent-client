@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net"
 	"testing"
-	"time"
 )
 
 func TestHandshakeRoundtrip(t *testing.T) {
@@ -82,6 +81,32 @@ func TestMessageSerialization(t *testing.T) {
 	}
 	if len(reqMsg.Payload) != 12 {
 		t.Errorf("expected 12 bytes payload for request, got %d", len(reqMsg.Payload))
+	}
+	pIdx, pBegin, pLen, err := ParseRequest(reqMsg)
+	if err != nil || pIdx != 5 || pBegin != 16384 || pLen != 16384 {
+		t.Errorf("ParseRequest failed: got idx %d, begin %d, len %d, err %v", pIdx, pBegin, pLen, err)
+	}
+
+	// 5. MsgCancel (ID 8)
+	cancelMsg := FormatCancel(5, 16384, 16384)
+	if cancelMsg.ID == nil || *cancelMsg.ID != MsgCancel {
+		t.Errorf("expected MsgCancel ID 8")
+	}
+	cIdx, cBegin, cLen, err := ParseCancel(cancelMsg)
+	if err != nil || cIdx != 5 || cBegin != 16384 || cLen != 16384 {
+		t.Errorf("ParseCancel failed: got idx %d, begin %d, len %d, err %v", cIdx, cBegin, cLen, err)
+	}
+
+	// 6. MsgPiece (ID 7)
+	sampleData := []byte("hello-bittorrent-block")
+	pieceMsg := FormatPiece(2, 0, sampleData)
+	if pieceMsg.ID == nil || *pieceMsg.ID != MsgPiece {
+		t.Errorf("expected MsgPiece ID 7")
+	}
+	targetBuf := make([]byte, len(sampleData))
+	n, err := ParsePiece(2, targetBuf, pieceMsg)
+	if err != nil || n != len(sampleData) || !bytes.Equal(targetBuf, sampleData) {
+		t.Errorf("ParsePiece failed: n=%d, data=%s, err=%v", n, string(targetBuf), err)
 	}
 }
 
