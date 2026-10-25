@@ -106,3 +106,33 @@ func TestEncode(t *testing.T) {
 		t.Errorf("unexpected announce: %v", decodedDict["announce"])
 	}
 }
+
+func TestDecodeLeading(t *testing.T) {
+	// A dictionary followed by raw binary payload (like in ut_metadata)
+	input := []byte("d8:msg_typei1e5:piecei0eeEXTRA_BINARY_DATA")
+
+	val, consumed, err := DecodeLeading(input)
+	if err != nil {
+		t.Fatalf("DecodeLeading failed: %v", err)
+	}
+
+	dict, ok := val.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", val)
+	}
+
+	if dict["msg_type"] != int64(1) || dict["piece"] != int64(0) {
+		t.Errorf("unexpected dict content: %+v", dict)
+	}
+
+	expectedPrefix := "d8:msg_typei1e5:piecei0ee"
+	if consumed != len(expectedPrefix) {
+		t.Errorf("expected %d consumed bytes, got %d", len(expectedPrefix), consumed)
+	}
+
+	trailing := string(input[consumed:])
+	if trailing != "EXTRA_BINARY_DATA" {
+		t.Errorf("expected trailing 'EXTRA_BINARY_DATA', got %q", trailing)
+	}
+}
+

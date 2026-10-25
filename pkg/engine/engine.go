@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -45,15 +46,17 @@ type ManagedTorrent struct {
 
 // Engine orchestrates torrent downloads, peer connections, tracker announces, and session state.
 type Engine struct {
-	PeerID         [20]byte
-	Port           uint16
-	DownloadDir    string
-	ConfigDir      string
-	SpeedLimitDown int64
-	SpeedLimitUp   int64
-	torrents       map[[20]byte]*ManagedTorrent
-	mu             sync.RWMutex
-	nextID         int
+	PeerID           [20]byte
+	Port             uint16
+	DownloadDir      string
+	ConfigDir        string
+	SpeedLimitDown   int64
+	SpeedLimitUp     int64
+	torrents         map[[20]byte]*ManagedTorrent
+	mu               sync.RWMutex
+	nextID           int
+	listener         net.Listener
+	listenerStopChan chan struct{}
 }
 
 // NewEngine creates and initializes a BitTorrent engine.
@@ -63,12 +66,13 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 	_, _ = rand.Read(peerID[8:])
 
 	return &Engine{
-		PeerID:      peerID,
-		Port:        port,
-		DownloadDir: downloadDir,
-		ConfigDir:   "./config",
-		torrents:    make(map[[20]byte]*ManagedTorrent),
-		nextID:      1,
+		PeerID:           peerID,
+		Port:             port,
+		DownloadDir:      downloadDir,
+		ConfigDir:        "./config",
+		torrents:         make(map[[20]byte]*ManagedTorrent),
+		nextID:           1,
+		listenerStopChan: make(chan struct{}),
 	}
 }
 
@@ -279,7 +283,9 @@ func (e *Engine) runTorrent(t *ManagedTorrent) {
 				t.PieceManager.OnPeerDisconnect(conn.Bitfield)
 
 				t.mu.Lock()
-				t.ActivePeers--
+				if t.ActivePeers > 0 {
+					t.ActivePeers--
+				}
 				for i, c := range t.activeConns {
 					if c == conn {
 						t.activeConns = append(t.activeConns[:i], t.activeConns[i+1:]...)
@@ -465,3 +471,30 @@ func (e *Engine) ListTorrents() []*ManagedTorrent {
 	}
 	return list
 }
+
+// Close stops the peer listener and gracefully stops all managed torrents.
+func (e *Engine) Close() error {
+	var errs []error
+	if err := e.StopListener(); err != nil {
+		errs = append(errs, err)
+	}
+
+	e.mu.RLock()
+	ids := make([]int, 0, len(e.torrents))
+	for _, t := range e.torrents {
+		ids = append(ids, t.ID)
+	}
+	e.mu.RUnlock()
+
+	for _, id := range ids {
+		if err := e.StopTorrent(id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing engine: %v", errs)
+	}
+	return nil
+}
+

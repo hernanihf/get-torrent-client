@@ -2,8 +2,13 @@ package peer
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"net"
+	"os"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestHandshakeRoundtrip(t *testing.T) {
@@ -30,6 +35,9 @@ func TestHandshakeRoundtrip(t *testing.T) {
 	}
 	if parsed.PeerID != peerID {
 		t.Errorf("peer_id mismatch: expected %x, got %x", peerID, parsed.PeerID)
+	}
+	if !parsed.SupportsExtension() {
+		t.Errorf("expected SupportsExtension to be true")
 	}
 }
 
@@ -135,6 +143,184 @@ func TestBitfield(t *testing.T) {
 	}
 	if bf.HasPiece(15) {
 		t.Errorf("expected piece 15 to be false")
+	}
+
+	emptyBf := make(Bitfield, 3)
+	if emptyBf.HasAnyPiece() {
+		t.Errorf("expected empty bitfield HasAnyPiece to be false")
+	}
+
+	if !bf.HasAnyPiece() {
+		t.Errorf("expected populated bitfield HasAnyPiece to be true")
+	}
+}
+
+func TestAcceptHandshake(t *testing.T) {
+	infoHash := [20]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	ourPeerID := [20]byte{'-', 'G', 'T', '0', '0', '0', '1', '-', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1'}
+	remotePeerID := [20]byte{'-', 'U', 'T', '3', '5', '3', '0', '-', '2', '2', '2', '2', '2', '2', '2', '2', '2', '2', '2', '2'}
+
+	// 1. Success case
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	go func() {
+		remoteHS := NewHandshake(infoHash, remotePeerID)
+		_, _ = c1.Write(remoteHS.Serialize())
+		_ , _ = ReadHandshake(c1)
+	}()
+
+	conn, err := AcceptHandshake(c2, ourPeerID, 2*time.Second, func(h [20]byte) bool {
+		return h == infoHash
+	})
+	if err != nil {
+		t.Fatalf("AcceptHandshake failed: %v", err)
+	}
+	if conn.PeerID != remotePeerID {
+		t.Errorf("expected remote peer ID %x, got %x", remotePeerID, conn.PeerID)
+	}
+	if conn.InfoHash != infoHash {
+		t.Errorf("expected info hash %x, got %x", infoHash, conn.InfoHash)
+	}
+	if !conn.Choked || !conn.AmChoking {
+		t.Errorf("expected Choked=true and AmChoking=true initially")
+	}
+
+	// 2. Self-connection case
+	s1, s2 := net.Pipe()
+	defer s1.Close()
+	defer s2.Close()
+
+	go func() {
+		selfHS := NewHandshake(infoHash, ourPeerID)
+		_, _ = s1.Write(selfHS.Serialize())
+	}()
+
+	_, err = AcceptHandshake(s2, ourPeerID, 2*time.Second, func(h [20]byte) bool { return true })
+	if err != ErrSelfConnection {
+		t.Errorf("expected ErrSelfConnection, got %v", err)
+	}
+
+	// 3. Torrent not found / validate returns false
+	v1, v2 := net.Pipe()
+	defer v1.Close()
+	defer v2.Close()
+
+	go func() {
+		otherHS := NewHandshake(infoHash, remotePeerID)
+		_, _ = v1.Write(otherHS.Serialize())
+	}()
+
+	_, err = AcceptHandshake(v2, ourPeerID, 2*time.Second, func(h [20]byte) bool { return false })
+	if err != ErrTorrentNotFound {
+		t.Errorf("expected ErrTorrentNotFound, got %v", err)
+	}
+}
+
+type mockDeadlineConn struct {
+	net.Conn
+	deadline time.Time
+	mu       sync.Mutex
+}
+
+func (m *mockDeadlineConn) SetDeadline(t time.Time) error {
+	m.mu.Lock()
+	m.deadline = t
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *mockDeadlineConn) Read(b []byte) (int, error) {
+	m.mu.Lock()
+	dl := m.deadline
+	m.mu.Unlock()
+
+	if !dl.IsZero() && time.Now().After(dl) {
+		return 0, os.ErrDeadlineExceeded
+	}
+
+	type readRes struct {
+		n   int
+		err error
+	}
+	ch := make(chan readRes, 1)
+	go func() {
+		n, err := m.Conn.Read(b)
+		ch <- readRes{n, err}
+	}()
+
+	if dl.IsZero() {
+		res := <-ch
+		return res.n, res.err
+	}
+
+	select {
+	case res := <-ch:
+		return res.n, res.err
+	case <-time.After(time.Until(dl)):
+		_ = m.Conn.Close()
+		return 0, os.ErrDeadlineExceeded
+	}
+}
+
+func TestAcceptHandshakeSlowlorisTimeout(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	serverConn := &mockDeadlineConn{Conn: c2}
+	ourPeerID := [20]byte{'-', 'G', 'T', '0', '0', '0', '1', '-', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', '1'}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := AcceptHandshake(serverConn, ourPeerID, 50*time.Millisecond, func(h [20]byte) bool { return true })
+		errChan <- err
+	}()
+
+	// Slowloris peer: writes only 10 bytes and stops
+	go func() {
+		_, _ = c1.Write([]byte{19, 'B', 'i', 't', 'T', 'o', 'r', 'r', 'e', 'n'})
+	}()
+
+	select {
+	case err := <-errChan:
+		if err == nil {
+			t.Fatalf("expected timeout error in AcceptHandshake, got nil")
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Logf("AcceptHandshake failed as expected on slowloris: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for AcceptHandshake to abort on slowloris peer")
+	}
+}
+
+func TestSendAndReadBitfield(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	peerConn := &Conn{Conn: c1}
+	remoteConn := &Conn{Conn: c2}
+
+	bf := make(Bitfield, 2)
+	bf.SetPiece(3)
+	bf.SetPiece(10)
+
+	go func() {
+		_ = peerConn.SendBitfield(bf)
+	}()
+
+	msg, err := remoteConn.ReadMsg()
+	if err != nil {
+		t.Fatalf("ReadMsg failed: %v", err)
+	}
+	if msg.ID == nil || *msg.ID != MsgBitfield {
+		t.Fatalf("expected MsgBitfield, got %v", msg.ID)
+	}
+	if !remoteConn.Bitfield.HasPiece(3) || !remoteConn.Bitfield.HasPiece(10) {
+		t.Errorf("expected pieces 3 and 10 to be set in remoteConn.Bitfield")
 	}
 }
 

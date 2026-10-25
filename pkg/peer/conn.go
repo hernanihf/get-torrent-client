@@ -12,6 +12,8 @@ import (
 
 var (
 	ErrInfoHashMismatch = errors.New("peer returned mismatched info_hash")
+	ErrSelfConnection   = errors.New("peer connected to itself")
+	ErrTorrentNotFound  = errors.New("torrent info_hash not recognized or not active")
 )
 
 // Conn manages the peer wire session over a TCP connection.
@@ -80,6 +82,66 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 	return c, nil
 }
 
+// AcceptHandshake receives an incoming connection, parses the handshake, validates it,
+// sends a reciprocal handshake, and returns an initialized *Conn.
+func AcceptHandshake(netConn net.Conn, ourPeerID [20]byte, timeout time.Duration, validate func(infoHash [20]byte) bool) (*Conn, error) {
+	if timeout > 0 {
+		_ = netConn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	remoteHS, err := ReadHandshake(netConn)
+	if err != nil {
+		return nil, fmt.Errorf("reading handshake: %w", err)
+	}
+
+	if remoteHS.PeerID == ourPeerID {
+		return nil, ErrSelfConnection
+	}
+
+	if validate != nil && !validate(remoteHS.InfoHash) {
+		return nil, ErrTorrentNotFound
+	}
+
+	// Send reciprocal handshake
+	hs := NewHandshake(remoteHS.InfoHash, ourPeerID)
+	if _, err := netConn.Write(hs.Serialize()); err != nil {
+		return nil, fmt.Errorf("sending handshake: %w", err)
+	}
+
+	// Reset deadline for normal message exchange
+	_ = netConn.SetDeadline(time.Time{})
+
+	var remotePeer tracker.Peer
+	if tcpAddr, ok := netConn.RemoteAddr().(*net.TCPAddr); ok {
+		remotePeer = tracker.Peer{
+			IP:   tcpAddr.IP,
+			Port: uint16(tcpAddr.Port),
+		}
+	} else if addr := netConn.RemoteAddr(); addr != nil {
+		host, portStr, err := net.SplitHostPort(addr.String())
+		if err == nil {
+			var p uint64
+			fmt.Sscanf(portStr, "%d", &p)
+			remotePeer = tracker.Peer{
+				IP:   net.ParseIP(host),
+				Port: uint16(p),
+			}
+		}
+	}
+
+	return &Conn{
+		Conn:         netConn,
+		Choked:       true,
+		Interested:   false,
+		AmChoking:    true,
+		AmInterested: false,
+		PeerID:       remoteHS.PeerID,
+		InfoHash:     remoteHS.InfoHash,
+		RemotePeer:   remotePeer,
+	}, nil
+}
+
+
 func (c *Conn) initBitfield() error {
 	_ = c.Conn.SetDeadline(time.Now().Add(5 * time.Second))
 	defer func() { _ = c.Conn.SetDeadline(time.Time{}) }()
@@ -140,6 +202,11 @@ func (c *Conn) SendChoke() error {
 	return c.SendMessage(&Message{ID: &id})
 }
 
+// SendBitfield transmits our bitfield to the remote peer.
+func (c *Conn) SendBitfield(bf Bitfield) error {
+	return c.SendMessage(FormatBitfield(bf))
+}
+
 // SendRequest asks the peer for a block of data (typically 16 KB).
 func (c *Conn) SendRequest(index, begin, length int) error {
 	return c.SendMessage(FormatRequest(index, begin, length))
@@ -173,6 +240,8 @@ func (c *Conn) ReadMsg() (*Message, error) {
 			if err == nil {
 				c.Bitfield.SetPiece(idx)
 			}
+		case MsgBitfield:
+			c.Bitfield = Bitfield(msg.Payload)
 		}
 	}
 

@@ -19,17 +19,26 @@ var (
 // Handshake represents the initial 68-byte exchange between BitTorrent peers.
 type Handshake struct {
 	Pstr     string
+	Reserved [8]byte
 	InfoHash [20]byte
 	PeerID   [20]byte
 }
 
 // NewHandshake creates a new Handshake for a given info_hash and peer_id.
 func NewHandshake(infoHash, peerID [20]byte) *Handshake {
+	var reserved [8]byte
+	reserved[5] |= 0x10 // BEP 0010 Extension Protocol support
 	return &Handshake{
 		Pstr:     protocolIdentifier,
+		Reserved: reserved,
 		InfoHash: infoHash,
 		PeerID:   peerID,
 	}
+}
+
+// SupportsExtension returns true if the peer indicates support for BEP 0010 extension protocol.
+func (h *Handshake) SupportsExtension() bool {
+	return (h.Reserved[5] & 0x10) != 0
 }
 
 // Serialize converts the Handshake into its 68-byte binary representation.
@@ -38,7 +47,7 @@ func (h *Handshake) Serialize() []byte {
 	buf[0] = byte(len(h.Pstr))
 	curr := 1
 	curr += copy(buf[curr:], []byte(h.Pstr))
-	curr += copy(buf[curr:], make([]byte, 8)) // 8 reserved bytes
+	curr += copy(buf[curr:], h.Reserved[:])
 	curr += copy(buf[curr:], h.InfoHash[:])
 	copy(buf[curr:], h.PeerID[:])
 	return buf
@@ -61,12 +70,16 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 		return nil, fmt.Errorf("%w: got %q", ErrInvalidProtocol, pstr)
 	}
 
+	var reserved [8]byte
+	copy(reserved[:], buf[1+pstrlen:1+pstrlen+8])
+
 	var infoHash, peerID [20]byte
 	copy(infoHash[:], buf[1+pstrlen+8:1+pstrlen+8+20])
 	copy(peerID[:], buf[1+pstrlen+8+20:])
 
 	return &Handshake{
 		Pstr:     pstr,
+		Reserved: reserved,
 		InfoHash: infoHash,
 		PeerID:   peerID,
 	}, nil

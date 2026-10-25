@@ -22,3 +22,14 @@ func (bf Bitfield) SetPiece(index int) {
 	}
 	bf[byteIndex] |= 1 << (7 - offset)
 }
+
+// HasAnyPiece returns true if any piece bit is set in the bitfield.
+func (bf Bitfield) HasAnyPiece() bool {
+	for _, b := range bf {
+		if b != 0 {
+			return true
+		}
+	}
+	return false
+}
+

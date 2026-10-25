@@ -31,6 +31,10 @@ func main() {
 		log.Printf("[Daemon] Notice: Could not load prior session: %v", err)
 	}
 
+	if err := eng.StartListener(); err != nil {
+		log.Fatalf("[Daemon] Failed to start peer listener: %v", err)
+	}
+
 	server := rpc.NewServer(*rpcAddr, eng)
 
 	go func() {
@@ -47,6 +51,7 @@ func main() {
 	<-sigChan
 
 	log.Println("Shutting down get-torrent daemon gracefully...")
+	_ = eng.Close()
 	if err := eng.SaveState(); err != nil {
 		log.Printf("[Daemon] Error saving session state: %v", err)
 	} else {

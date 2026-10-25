@@ -97,10 +97,12 @@ func (s *Server) dispatch(req Request) Response {
 	case "session-get":
 		downloadDir := "/Downloads"
 		var speedDown, speedUp int64
+		var peerPort uint16 = 51413
 		if s.engine != nil {
 			downloadDir = s.engine.DownloadDir
 			speedDown = s.engine.SpeedLimitDown
 			speedUp = s.engine.SpeedLimitUp
+			peerPort = s.engine.Port
 		}
 
 		return Response{
@@ -116,7 +118,7 @@ func (s *Server) dispatch(req Request) Response {
 				"speed-limit-down-enabled": speedDown > 0,
 				"speed-limit-up":           speedUp,
 				"speed-limit-up-enabled":   speedUp > 0,
-				"peer-port":                9091,
+				"peer-port":                peerPort,
 				"port-is-open":             true,
 			},
 		}

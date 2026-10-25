@@ -1,7 +1,6 @@
 package bencode
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -15,22 +14,49 @@ var (
 	ErrUnexpectedEOF  = errors.New("unexpected EOF while parsing bencode")
 )
 
+type byteReader interface {
+	io.ByteScanner
+	io.Reader
+}
+
+func readUntil(r io.ByteReader, delim byte) ([]byte, error) {
+	var buf []byte
+	for {
+		b, err := r.ReadByte()
+		if err != nil {
+			return nil, ErrUnexpectedEOF
+		}
+		if b == delim {
+			break
+		}
+		buf = append(buf, b)
+	}
+	return buf, nil
+}
+
+// DecodeLeading decodes the first bencoded value from data and returns the decoded object
+// along with the number of bytes consumed from the input slice.
+func DecodeLeading(data []byte) (any, int, error) {
+	r := bytes.NewReader(data)
+	val, err := decodeValue(r)
+	if err != nil {
+		return nil, 0, err
+	}
+	consumed := len(data) - r.Len()
+	return val, consumed, nil
+}
+
 // Decode parses a bencoded byte slice and returns the corresponding Go data structure:
 // - string: []byte or string
 // - integer: int64
 // - list: []any
 // - dictionary: map[string]any
 func Decode(data []byte) (any, error) {
-	r := bytes.NewReader(data)
-	br := bufio.NewReader(r)
-	val, err := decodeValue(br)
-	if err != nil {
-		return nil, err
-	}
-	return val, nil
+	val, _, err := DecodeLeading(data)
+	return val, err
 }
 
-func decodeValue(r *bufio.Reader) (any, error) {
+func decodeValue(r byteReader) (any, error) {
 	b, err := r.ReadByte()
 	if err != nil {
 		return nil, err
@@ -53,12 +79,12 @@ func decodeValue(r *bufio.Reader) (any, error) {
 	}
 }
 
-func decodeInt(r *bufio.Reader) (int64, error) {
-	line, err := r.ReadBytes('e')
+func decodeInt(r byteReader) (int64, error) {
+	line, err := readUntil(r, 'e')
 	if err != nil {
-		return 0, ErrUnexpectedEOF
+		return 0, err
 	}
-	numStr := string(line[:len(line)-1])
+	numStr := string(line)
 	val, err := strconv.ParseInt(numStr, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%w: invalid integer '%s'", ErrInvalidBencode, numStr)
@@ -66,12 +92,12 @@ func decodeInt(r *bufio.Reader) (int64, error) {
 	return val, nil
 }
 
-func decodeString(r *bufio.Reader) (string, error) {
-	lenBytes, err := r.ReadBytes(':')
+func decodeString(r byteReader) (string, error) {
+	lenBytes, err := readUntil(r, ':')
 	if err != nil {
-		return "", ErrUnexpectedEOF
+		return "", err
 	}
-	lengthStr := string(lenBytes[:len(lenBytes)-1])
+	lengthStr := string(lenBytes)
 	strLen, err := strconv.Atoi(lengthStr)
 	if err != nil || strLen < 0 {
 		return "", fmt.Errorf("%w: invalid string length '%s'", ErrInvalidBencode, lengthStr)
@@ -85,7 +111,7 @@ func decodeString(r *bufio.Reader) (string, error) {
 	return string(buf), nil
 }
 
-func decodeList(r *bufio.Reader) ([]any, error) {
+func decodeList(r byteReader) ([]any, error) {
 	var list []any
 	for {
 		b, err := r.ReadByte()
@@ -107,7 +133,7 @@ func decodeList(r *bufio.Reader) ([]any, error) {
 	return list, nil
 }
 
-func decodeDict(r *bufio.Reader) (map[string]any, error) {
+func decodeDict(r byteReader) (map[string]any, error) {
 	dict := make(map[string]any)
 	for {
 		b, err := r.ReadByte()

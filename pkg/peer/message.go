@@ -47,6 +47,15 @@ func FormatHave(index int) *Message {
 	return &Message{ID: &id, Payload: payload}
 }
 
+// FormatBitfield builds a MsgBitfield (ID 5) message transmitting possession of pieces.
+func FormatBitfield(bf Bitfield) *Message {
+	payload := make([]byte, len(bf))
+	copy(payload, bf)
+	id := MsgBitfield
+	return &Message{ID: &id, Payload: payload}
+}
+
+
 // ParseHave extracts the piece index from a MsgHave payload.
 func ParseHave(msg *Message) (int, error) {
 	if msg.ID == nil || *msg.ID != MsgHave {
