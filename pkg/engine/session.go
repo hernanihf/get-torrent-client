@@ -81,6 +81,9 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	if conn.SupportsExtensions {
 		s.send(peer.FormatExtHandshake(t.metadataSize()))
 	}
+	if server := e.dhtServer(); server != nil && conn.SupportsDHT {
+		s.send(peer.FormatPort(uint16(server.Addr().Port)))
+	}
 	s.attach()
 	s.onExtHandshake() // the handshake may have arrived during Dial
 	s.requestBlocks()
@@ -205,6 +208,11 @@ func (s *peerSession) handle(msg *peer.Message) {
 
 	case peer.MsgRequest:
 		s.handleRequest(msg)
+
+	case peer.MsgPort:
+		if port, err := peer.ParsePort(msg); err == nil {
+			s.e.addDHTNode(s.conn.RemotePeer.IP, port)
+		}
 
 	case peer.MsgExtended:
 		extID, payload, err := peer.ParseExtended(msg)

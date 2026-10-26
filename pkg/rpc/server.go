@@ -122,6 +122,7 @@ func (s *Server) dispatch(req Request) Response {
 				"speed-limit-up-enabled":   speedUp > 0,
 				"peer-port":                peerPort,
 				"port-is-open":             true,
+				"dht-enabled":              s.engine != nil && s.engine.DHTEnabled(),
 			},
 		}
 

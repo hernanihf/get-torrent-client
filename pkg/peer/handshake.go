@@ -28,6 +28,7 @@ type Handshake struct {
 func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 	var reserved [8]byte
 	reserved[5] |= 0x10 // BEP 0010 Extension Protocol support
+	reserved[7] |= 0x01 // BEP 0005 DHT support
 	return &Handshake{
 		Pstr:     protocolIdentifier,
 		Reserved: reserved,
@@ -39,6 +40,11 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 // SupportsExtension returns true if the peer indicates support for BEP 0010 extension protocol.
 func (h *Handshake) SupportsExtension() bool {
 	return (h.Reserved[5] & 0x10) != 0
+}
+
+// SupportsDHT returns true if the peer indicates BEP 0005 DHT support (and may send MsgPort).
+func (h *Handshake) SupportsDHT() bool {
+	return (h.Reserved[7] & 0x01) != 0
 }
 
 // Serialize converts the Handshake into its 68-byte binary representation.

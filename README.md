@@ -21,6 +21,8 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
 - **Peer Wire Protocol ([BEP 0003](https://www.bittorrent.org/beps/bep_0003.html))**: Handshake estricto de 68 bytes, framing de mensajes, intercambio de bitfields y pipelining de bloques de 16 KiB.
 - **Magnet Links ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) / [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html))**: Descarga del diccionario `info` desde peers vía `ut_metadata`, verificación SHA-1 contra el `info_hash`, persistencia como `.torrent` en `config/torrents/` y servicio de metadatos a otros peers.
 - **Multi-tracker (`announce-list`)**: Anuncio concurrente a todos los trackers con fusión y deduplicación de peers.
+- **Mainline DHT ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html))**: Nodo Kademlia sobre UDP (mismo puerto que los peers) con k-buckets, búsquedas iterativas con *soft timeouts*, tokens rotativos para `announce_peer`, protección anti-spoofing y persistencia del ID y la tabla de ruteo en `config/dht.json`. Permite descargar magnets sin trackers. Los torrents privados ([BEP 0027](https://www.bittorrent.org/beps/bep_0027.html)) nunca usan la DHT.
+- **Re-anuncio periódico**: Trackers y DHT se consultan de nuevo cada 5 minutos (cada minuto si no hay peers); los fallos se reportan en `errorString` sin detener el torrent.
 
 ### 🧠 Swarm & Algoritmos de Descarga
 - **Planificación Rarest-First**: Mapea en tiempo real la disponibilidad de piezas en el enjambre y prioriza las piezas más escasas para optimizar la salud del enjambre P2P.
@@ -104,7 +106,9 @@ Parámetros disponibles:
 - `--rpc-addr`: Dirección y puerto de escucha del servidor RPC (por defecto `127.0.0.1:9091`).
 - `--download-dir`: Directorio donde se guardarán los archivos completados (por defecto `./downloads`).
 - `--config-dir`: Carpeta donde se almacena el archivo `state.json` de sesión (por defecto `./config`).
-- `--port`: Puerto de escucha para conexiones entrantes de peers (por defecto `6881`).
+- `--port`: Puerto de escucha para conexiones entrantes de peers (TCP) y para la DHT (UDP) (por defecto `6881`).
+- `--dht`: Habilita la DHT (por defecto `true`).
+- `--dht-bootstrap`: Routers de arranque de la DHT separados por comas (por defecto `router.bittorrent.com:6881`, `dht.transmissionbt.com:6881`, ...).
 
 ### 2. Controlar mediante Transmission RPC (`curl`)
 Obtener el token de sesión CSRF y listar torrents:
@@ -143,6 +147,7 @@ Paquetes testeados:
 - `pkg/rpc`: Protección contra CSRF 409 y endpoints de control de torrents.
 - `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`) y descarga end-to-end desde un magnet entre dos engines reales.
 - `pkg/peer`, `pkg/metadata`: Mensajes BEP 0010/0009 y ensamblado/verificación de metadatos.
+- `pkg/dht`: KRPC, tabla de ruteo, tokens, paquetes falsificados/malformados, red de 30 nodos en localhost y ausencia de fugas de goroutines; en `pkg/engine`, descarga end-to-end de un magnet sin trackers vía DHT.
 - `pkg/metainfo`: Info-hash sobre bytes crudos, `announce-list` y rechazo de rutas inseguras (`..`, absolutas).
 
 ---
@@ -164,9 +169,9 @@ Consulta [AGENTS.md](AGENTS.md) para más detalles sobre las reglas del equipo y
 - [x] **Fase 1: Descarga y Almacenamiento**: Piece manager (16 KB), verificación SHA-1 y escritura multi-archivo en disco.
 - [x] **Fase 2: Estrategia P2P**: Algoritmo Rarest-First, modo Endgame con cancelaciones y servicio de piezas (seeding).
 - [x] **Fase 3: Transmission RPC Completo**: Endpoints de control de ciclo de vida (`start`, `stop`, `remove`), configuración en caliente y persistencia de sesión (`state.json`).
-- [ ] **Fase 4: Magnet Links & DHT**
+- [x] **Fase 4: Magnet Links & DHT**
   - [x] **4a – Magnet Links**: Parser de enlaces magnet (`magnet:?xt=...`), Extension Protocol ([BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)) y descarga/servicio de metadatos `ut_metadata` ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)).
-  - [ ] **4b – Kademlia DHT** ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)): necesario para magnets sin trackers (`tr=`).
+  - [x] **4b – Kademlia DHT** ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)): descubrimiento de peers sin trackers, `announce_peer` y mensaje `PORT`.
 - [ ] **Fase 5: Clientes & WebUI**: CLI nativo (`get-torrent-cli`) y Web Dashboard interactivo integrado en el daemon.
 
 ---

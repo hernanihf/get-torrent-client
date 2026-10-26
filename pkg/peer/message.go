@@ -20,7 +20,31 @@ const (
 	MsgRequest       MessageID = 6
 	MsgPiece         MessageID = 7
 	MsgCancel        MessageID = 8
+	MsgPort          MessageID = 9 // BEP 0005: the sender's DHT UDP port
 )
+
+// FormatPort builds a MsgPort (ID 9) message advertising our DHT UDP port.
+func FormatPort(port uint16) *Message {
+	payload := make([]byte, 2)
+	binary.BigEndian.PutUint16(payload, port)
+	id := MsgPort
+	return &Message{ID: &id, Payload: payload}
+}
+
+// ParsePort extracts the DHT UDP port from a MsgPort payload.
+func ParsePort(msg *Message) (uint16, error) {
+	if msg.ID == nil || *msg.ID != MsgPort {
+		return 0, errors.New("expected port message")
+	}
+	if len(msg.Payload) != 2 {
+		return 0, fmt.Errorf("expected port payload length 2, got %d", len(msg.Payload))
+	}
+	port := binary.BigEndian.Uint16(msg.Payload)
+	if port == 0 {
+		return 0, errors.New("port message with port 0")
+	}
+	return port, nil
+}
 
 // Message represents a framed BitTorrent peer wire message.
 // A nil ID indicates a keep-alive message (length 0).

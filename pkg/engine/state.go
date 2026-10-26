@@ -30,6 +30,10 @@ type EngineState struct {
 
 // SaveState serializes the current session and torrent states to state.json.
 func (e *Engine) SaveState() error {
+	if err := e.saveDHTState(); err != nil {
+		log.Printf("[Engine] Saving DHT state: %v", err)
+	}
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 

@@ -34,6 +34,8 @@ type TorrentMeta struct {
 	Pieces       [][20]byte
 	TotalLength  int64
 	Files        []FileInfo
+	// Private torrents (BEP 0027) must only get peers from their trackers, never the DHT.
+	Private bool
 	// InfoBytes is the exact bencoded info dictionary; its SHA-1 is InfoHash.
 	InfoBytes []byte
 }
@@ -189,10 +191,12 @@ func parseInfo(infoDict map[string]any) (*TorrentMeta, error) {
 		copy(pieces[i][:], rawPieces[i*20:(i+1)*20])
 	}
 
+	private, _ := infoDict["private"].(int64)
 	meta := &TorrentMeta{
 		Name:        name,
 		PieceLength: pieceLength,
 		Pieces:      pieces,
+		Private:     private == 1,
 	}
 	// Single file vs Multi file
 	if lengthVal, ok := infoDict["length"].(int64); ok {

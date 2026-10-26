@@ -31,6 +31,8 @@ type Conn struct {
 
 	// SupportsExtensions is true when the remote handshake set the BEP 0010 reserved bit.
 	SupportsExtensions bool
+	// SupportsDHT is true when the remote handshake set the BEP 0005 DHT reserved bit.
+	SupportsDHT bool
 	// PeerExt holds the remote extension handshake once received (nil until then).
 	PeerExt *ExtHandshake
 
@@ -67,6 +69,12 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 		return nil, fmt.Errorf("%w: expected %x, got %x", ErrInfoHashMismatch, infoHash, remoteHS.InfoHash)
 	}
 
+	// Peer sources such as the DHT can hand back our own address.
+	if remoteHS.PeerID == peerID {
+		netConn.Close()
+		return nil, ErrSelfConnection
+	}
+
 	// Reset deadline for normal message exchange
 	_ = netConn.SetDeadline(time.Time{})
 
@@ -81,6 +89,7 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 		RemotePeer:   p,
 
 		SupportsExtensions: remoteHS.SupportsExtension(),
+		SupportsDHT:        remoteHS.SupportsDHT(),
 	}
 
 	// Read initial bitfield if peer sends one immediately
@@ -150,6 +159,7 @@ func AcceptHandshake(netConn net.Conn, ourPeerID [20]byte, timeout time.Duration
 		RemotePeer:   remotePeer,
 
 		SupportsExtensions: remoteHS.SupportsExtension(),
+		SupportsDHT:        remoteHS.SupportsDHT(),
 	}, nil
 }
 
