@@ -119,54 +119,21 @@ func (e *Engine) handleInboundConn(netConn net.Conn) {
 		return
 	}
 
-	t.mu.Lock()
-	if t.State != StateDownloading && t.State != StateSeeding {
-		t.mu.Unlock()
+	// Enforces running state, peer-ID de-duplication and the per-torrent peer limit.
+	if !e.registerConn(t, conn) {
 		return
 	}
+	defer e.unregisterConn(t, conn)
 
-	// Deduplicate: check if already connected to this peer ID
-	for _, c := range t.activeConns {
-		if c.PeerID == conn.PeerID {
-			t.mu.Unlock()
-			return
-		}
-	}
-
-	// Limit concurrency
-	if t.ActivePeers >= MaxPeersPerTorrent {
-		t.mu.Unlock()
-		return
-	}
-
-	t.ActivePeers++
-	t.activeConns = append(t.activeConns, conn)
-	isDownloading := (t.State == StateDownloading)
-	t.mu.Unlock()
-
-	defer func() {
-		if len(conn.Bitfield) > 0 && t.PieceManager != nil {
-			t.PieceManager.OnPeerDisconnect(conn.Bitfield)
-		}
-
-		t.mu.Lock()
-		if t.ActivePeers > 0 {
-			t.ActivePeers--
-		}
-		for i, c := range t.activeConns {
-			if c == conn {
-				t.activeConns = append(t.activeConns[:i], t.activeConns[i+1:]...)
-				break
-			}
-		}
-		t.mu.Unlock()
-	}()
+	t.mu.RLock()
+	isDownloading := t.State == StateDownloading
+	t.mu.RUnlock()
 
 	log.Printf("[Engine] Inbound peer connected: %s (PeerID: %x)", netConn.RemoteAddr().String(), conn.PeerID[:8])
 
-	// Send our bitfield if we have any pieces
-	if t.PieceManager != nil && t.PieceManager.Bitfield.HasAnyPiece() {
-		_ = conn.SendBitfield(t.PieceManager.Bitfield)
+	// Send our bitfield if we have any pieces (must be the first message after the handshake)
+	if _, pm, _ := t.components(); pm != nil && pm.Bitfield.HasAnyPiece() {
+		_ = conn.SendBitfield(pm.Bitfield)
 	}
 
 	// Express interest if downloading

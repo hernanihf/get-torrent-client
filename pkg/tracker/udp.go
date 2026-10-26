@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	udpProtocolID = 0x41727101980
+	udpProtocolID  = 0x41727101980
 	actionConnect  = 0
 	actionAnnounce = 1
 	actionError    = 3
@@ -80,8 +80,8 @@ func UDPAnnounce(params AnnounceParams) (*AnnounceResponse, error) {
 	_ = binary.Write(buf, binary.BigEndian, uint64(params.Downloaded))
 	_ = binary.Write(buf, binary.BigEndian, uint64(params.Left))
 	_ = binary.Write(buf, binary.BigEndian, uint64(params.Uploaded))
-	_ = binary.Write(buf, binary.BigEndian, uint32(0)) // event: none
-	_ = binary.Write(buf, binary.BigEndian, uint32(0)) // IP address: 0
+	_ = binary.Write(buf, binary.BigEndian, uint32(0))      // event: none
+	_ = binary.Write(buf, binary.BigEndian, uint32(0))      // IP address: 0
 	_ = binary.Write(buf, binary.BigEndian, randomUint32()) // key
 	_ = binary.Write(buf, binary.BigEndian, int32(-1))      // num_want: default
 	_ = binary.Write(buf, binary.BigEndian, params.Port)

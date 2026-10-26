@@ -51,10 +51,12 @@ func main() {
 	<-sigChan
 
 	log.Println("Shutting down get-torrent daemon gracefully...")
-	_ = eng.Close()
+	// Save before Close: Close stops every torrent, which would persist them all as "stopped"
+	// and prevent active downloads from resuming on the next start.
 	if err := eng.SaveState(); err != nil {
 		log.Printf("[Daemon] Error saving session state: %v", err)
 	} else {
 		log.Println("[Daemon] Session state saved successfully.")
 	}
+	_ = eng.Close()
 }

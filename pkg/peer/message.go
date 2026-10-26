@@ -55,7 +55,6 @@ func FormatBitfield(bf Bitfield) *Message {
 	return &Message{ID: &id, Payload: payload}
 }
 
-
 // ParseHave extracts the piece index from a MsgHave payload.
 func ParseHave(msg *Message) (int, error) {
 	if msg.ID == nil || *msg.ID != MsgHave {

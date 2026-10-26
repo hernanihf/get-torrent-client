@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hernan/get-torrent/pkg/tracker"
@@ -18,15 +19,22 @@ var (
 
 // Conn manages the peer wire session over a TCP connection.
 type Conn struct {
-	Conn        net.Conn
-	Choked      bool
-	Interested  bool
-	AmChoking   bool
+	Conn         net.Conn
+	Choked       bool
+	Interested   bool
+	AmChoking    bool
 	AmInterested bool
-	Bitfield    Bitfield
-	PeerID      [20]byte
-	InfoHash    [20]byte
-	RemotePeer  tracker.Peer
+	Bitfield     Bitfield
+	PeerID       [20]byte
+	InfoHash     [20]byte
+	RemotePeer   tracker.Peer
+
+	// SupportsExtensions is true when the remote handshake set the BEP 0010 reserved bit.
+	SupportsExtensions bool
+	// PeerExt holds the remote extension handshake once received (nil until then).
+	PeerExt *ExtHandshake
+
+	writeMu sync.Mutex
 }
 
 // Dial connects to a remote peer, executes the BitTorrent handshake, and receives the peer's bitfield.
@@ -71,6 +79,8 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 		PeerID:       remoteHS.PeerID,
 		InfoHash:     infoHash,
 		RemotePeer:   p,
+
+		SupportsExtensions: remoteHS.SupportsExtension(),
 	}
 
 	// Read initial bitfield if peer sends one immediately
@@ -138,9 +148,10 @@ func AcceptHandshake(netConn net.Conn, ourPeerID [20]byte, timeout time.Duration
 		PeerID:       remoteHS.PeerID,
 		InfoHash:     remoteHS.InfoHash,
 		RemotePeer:   remotePeer,
+
+		SupportsExtensions: remoteHS.SupportsExtension(),
 	}, nil
 }
-
 
 func (c *Conn) initBitfield() error {
 	_ = c.Conn.SetDeadline(time.Now().Add(5 * time.Second))
@@ -151,27 +162,18 @@ func (c *Conn) initBitfield() error {
 		return err
 	}
 
-	if msg.ID == nil {
-		// Keep-alive received
-		return nil
-	}
-
-	if *msg.ID == MsgBitfield {
-		c.Bitfield = Bitfield(msg.Payload)
-	} else if *msg.ID == MsgHave {
-		idx, err := ParseHave(msg)
-		if err == nil {
-			c.Bitfield.SetPiece(idx)
-		}
-	} else if *msg.ID == MsgUnchoke {
-		c.Choked = false
-	}
-
+	c.UpdateState(msg)
 	return nil
 }
 
-// SendMessage serializes and writes a message to the peer.
+// WriteTimeout bounds how long a single message write may block on a slow or dead peer.
+const WriteTimeout = 30 * time.Second
+
+// SendMessage serializes and writes a message to the peer. Safe for concurrent use.
 func (c *Conn) SendMessage(msg *Message) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(WriteTimeout))
 	_, err := c.Conn.Write(msg.Serialize())
 	return err
 }
@@ -229,23 +231,45 @@ func (c *Conn) ReadMsg() (*Message, error) {
 		return nil, err
 	}
 
-	if msg.ID != nil {
-		switch *msg.ID {
-		case MsgChoke:
-			c.Choked = true
-		case MsgUnchoke:
-			c.Choked = false
-		case MsgHave:
-			idx, err := ParseHave(msg)
-			if err == nil {
-				c.Bitfield.SetPiece(idx)
+	c.UpdateState(msg)
+	return msg, nil
+}
+
+// UpdateState updates connection state (choke flags, bitfield, extension handshake) from a message.
+// Callers that read with ReadMessage directly must invoke it from the goroutine owning the Conn state.
+func (c *Conn) UpdateState(msg *Message) {
+	if msg.ID == nil {
+		return // Keep-alive
+	}
+	switch *msg.ID {
+	case MsgChoke:
+		c.Choked = true
+	case MsgUnchoke:
+		c.Choked = false
+	case MsgHave:
+		if idx, err := ParseHave(msg); err == nil {
+			// The bitfield may be unsized (no bitfield received, or metadata unknown for magnets).
+			c.Bitfield = c.Bitfield.Grow(idx + 1)
+			c.Bitfield.SetPiece(idx)
+		}
+	case MsgBitfield:
+		c.Bitfield = Bitfield(msg.Payload)
+	case MsgExtended:
+		if extID, payload, err := ParseExtended(msg); err == nil && extID == ExtHandshakeID {
+			if hs, err := ParseExtHandshake(payload); err == nil {
+				c.PeerExt = hs
 			}
-		case MsgBitfield:
-			c.Bitfield = Bitfield(msg.Payload)
 		}
 	}
+}
 
-	return msg, nil
+// PeerExtID returns the message ID the remote peer assigned to an extension, if supported.
+func (c *Conn) PeerExtID(name string) (uint8, bool) {
+	if c.PeerExt == nil {
+		return 0, false
+	}
+	id, ok := c.PeerExt.M[name]
+	return id, ok
 }
 
 // Close closes the underlying network connection.

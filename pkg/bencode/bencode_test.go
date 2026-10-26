@@ -136,3 +136,31 @@ func TestDecodeLeading(t *testing.T) {
 	}
 }
 
+func TestRawDictValue(t *testing.T) {
+	data := []byte("d1:ai1e4:infod1:xli1ei2eee1:z3:ende")
+	raw, err := RawDictValue(data, "info")
+	if err != nil {
+		t.Fatalf("RawDictValue: %v", err)
+	}
+	if string(raw) != "d1:xli1ei2eee" {
+		t.Errorf("got %q", raw)
+	}
+	if _, err := RawDictValue(data, "missing"); err == nil {
+		t.Errorf("expected error for missing key")
+	}
+	for _, bad := range []string{"", "li1ee", "d1:a", "di1ei2ee"} {
+		if _, err := RawDictValue([]byte(bad), "a"); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}
+
+func TestEncodeRawMessage(t *testing.T) {
+	out, err := Encode(map[string]any{"info": RawMessage("d1:bi2ee"), "a": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "d1:a1:x4:infod1:bi2eee" {
+		t.Errorf("got %q", out)
+	}
+}

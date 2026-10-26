@@ -33,3 +33,18 @@ func (bf Bitfield) HasAnyPiece() bool {
 	return false
 }
 
+// Grow returns a bitfield large enough to hold numPieces bits, preserving existing bits.
+// Hard-capped to guard against absurd indices sent by malicious peers.
+func (bf Bitfield) Grow(numPieces int) Bitfield {
+	const maxPieces = 1 << 22
+	if numPieces <= 0 || numPieces > maxPieces {
+		return bf
+	}
+	need := (numPieces + 7) / 8
+	if need <= len(bf) {
+		return bf
+	}
+	grown := make(Bitfield, need)
+	copy(grown, bf)
+	return grown
+}

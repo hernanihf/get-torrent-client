@@ -13,7 +13,7 @@ const (
 
 var (
 	ErrInvalidProtocol = errors.New("peer did not use 'BitTorrent protocol'")
-	ErrHandshakeLength  = errors.New("handshake byte count invalid")
+	ErrHandshakeLength = errors.New("handshake byte count invalid")
 )
 
 // Handshake represents the initial 68-byte exchange between BitTorrent peers.

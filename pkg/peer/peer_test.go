@@ -168,7 +168,7 @@ func TestAcceptHandshake(t *testing.T) {
 	go func() {
 		remoteHS := NewHandshake(infoHash, remotePeerID)
 		_, _ = c1.Write(remoteHS.Serialize())
-		_ , _ = ReadHandshake(c1)
+		_, _ = ReadHandshake(c1)
 	}()
 
 	conn, err := AcceptHandshake(c2, ourPeerID, 2*time.Second, func(h [20]byte) bool {

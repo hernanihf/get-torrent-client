@@ -1,0 +1,304 @@
+package engine
+
+import (
+	"encoding/binary"
+	"log"
+	"time"
+
+	"github.com/hernan/get-torrent/pkg/peer"
+	"github.com/hernan/get-torrent/pkg/storage"
+)
+
+const (
+	// PeerIdleTimeout drops peers that send nothing (not even keep-alives) for this long.
+	PeerIdleTimeout = 3 * time.Minute
+
+	// KeepAliveInterval is how often we send a keep-alive to a peer we have not written to.
+	KeepAliveInterval = 90 * time.Second
+
+	// peerTickInterval drives periodic per-peer work (metadata re-requests, keep-alives).
+	peerTickInterval = 10 * time.Second
+
+	// maxInflightBlocks caps pipelined block requests outstanding to one peer.
+	maxInflightBlocks = 8
+
+	// maxMetadataRequests caps ut_metadata piece requests issued to one peer at a time.
+	maxMetadataRequests = 8
+)
+
+// peerSession holds the per-connection state of the message loop. Only the goroutine running
+// handlePeerMessages touches it (and the Conn's state fields), so no locking is needed.
+type peerSession struct {
+	e        *Engine
+	t        *ManagedTorrent
+	conn     *peer.Conn
+	addr     string
+	pm       *storage.PieceManager // set once this peer's pieces are counted in availability
+	inflight int
+	extDone  bool // peer's extension handshake has been processed
+	lastSent time.Time
+	now      func() time.Time
+}
+
+// handlePeerMessages runs the message loop for an established, registered connection until the
+// peer disconnects, goes idle, or the torrent is stopped. The caller closes the connection.
+func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
+	s := &peerSession{
+		e:        e,
+		t:        t,
+		conn:     conn,
+		addr:     conn.RemotePeer.String(),
+		lastSent: time.Now(),
+		now:      time.Now,
+	}
+	defer s.detach()
+
+	t.mu.RLock()
+	stop := t.stopChan
+	t.mu.RUnlock()
+
+	// A dedicated reader goroutine lets the loop below react to stop signals and timers
+	// without abandoning a partially read message.
+	msgs := make(chan *peer.Message)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		defer close(msgs)
+		for {
+			_ = conn.Conn.SetReadDeadline(time.Now().Add(PeerIdleTimeout))
+			msg, err := peer.ReadMessage(conn.Conn)
+			if err != nil {
+				return
+			}
+			select {
+			case msgs <- msg:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	if conn.SupportsExtensions {
+		s.send(peer.FormatExtHandshake(t.metadataSize()))
+	}
+	s.attach()
+	s.onExtHandshake() // the handshake may have arrived during Dial
+	s.requestBlocks()
+
+	ticker := time.NewTicker(peerTickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.tick()
+		case msg, ok := <-msgs:
+			if !ok {
+				return
+			}
+			conn.UpdateState(msg)
+			s.handle(msg)
+		}
+	}
+}
+
+func (s *peerSession) send(msg *peer.Message) {
+	_ = s.conn.SendMessage(msg)
+	s.lastSent = s.now()
+}
+
+// attach counts this peer's pieces in the rarest-first availability map once metadata is known.
+// It reports whether attachment happened on this call.
+func (s *peerSession) attach() bool {
+	if s.pm != nil {
+		return false
+	}
+	_, pm, _ := s.t.components()
+	if pm == nil {
+		return false
+	}
+	pm.OnPeerBitfield(s.conn.Bitfield)
+	s.pm = pm
+	return true
+}
+
+func (s *peerSession) detach() {
+	if s.pm != nil {
+		s.pm.OnPeerDisconnect(s.conn.Bitfield)
+	}
+}
+
+func (s *peerSession) onExtHandshake() {
+	if s.extDone || s.conn.PeerExt == nil {
+		return
+	}
+	s.extDone = true
+	s.requestMetadata()
+}
+
+func (s *peerSession) tick() {
+	if s.attach() {
+		s.requestBlocks()
+	}
+	s.requestMetadata() // re-issues timed-out metadata requests
+	if s.now().Sub(s.lastSent) >= KeepAliveInterval {
+		s.send(&peer.Message{})
+	}
+}
+
+// requestBlocks pipelines block requests to the peer using rarest-first scheduling.
+func (s *peerSession) requestBlocks() {
+	if s.pm == nil || s.conn.Choked || s.pm.IsComplete() {
+		return
+	}
+	for s.inflight < maxInflightBlocks {
+		req, ok := s.pm.NextRequest(s.conn.Bitfield)
+		if !ok {
+			break
+		}
+		s.pm.RegisterRequest(req.PieceIndex, req.Begin, s.addr)
+		s.send(peer.FormatRequest(req.PieceIndex, req.Begin, req.Length))
+		s.inflight++
+	}
+}
+
+func (s *peerSession) handle(msg *peer.Message) {
+	// Metadata may have become available since the last message (magnet links); if this peer is
+	// attached now, its whole bitfield (including this message's effect) has just been counted.
+	justAttached := s.attach()
+	if msg.ID == nil {
+		return // Keep-alive
+	}
+
+	switch *msg.ID {
+	case peer.MsgUnchoke:
+		log.Printf("[Engine] Peer %s unchoked us! Requesting blocks (Rarest-First)...", s.addr)
+		s.requestBlocks()
+
+	case peer.MsgChoke:
+		// A choking peer discards our pending requests.
+		s.inflight = 0
+
+	case peer.MsgInterested:
+		// Unchoke interested peer so we seed/upload to them
+		s.send(&peer.Message{ID: idPtr(peer.MsgUnchoke)})
+		s.conn.AmChoking = false
+
+	case peer.MsgHave:
+		if s.pm != nil && !justAttached {
+			if idx, err := peer.ParseHave(msg); err == nil {
+				s.pm.OnPeerHave(idx)
+			}
+		}
+		s.requestBlocks()
+
+	case peer.MsgBitfield:
+		if s.pm != nil && !justAttached {
+			s.pm.OnPeerBitfield(s.conn.Bitfield)
+		}
+		s.requestBlocks()
+
+	case peer.MsgPiece:
+		s.handlePiece(msg)
+
+	case peer.MsgRequest:
+		s.handleRequest(msg)
+
+	case peer.MsgExtended:
+		extID, payload, err := peer.ParseExtended(msg)
+		if err != nil {
+			return
+		}
+		switch extID {
+		case peer.ExtHandshakeID:
+			s.onExtHandshake()
+		case peer.LocalUTMetadataID:
+			s.handleMetadataMsg(payload)
+		}
+	}
+}
+
+func (s *peerSession) handlePiece(msg *peer.Message) {
+	if s.pm == nil || len(msg.Payload) < 8 {
+		return
+	}
+	index := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
+	begin := int(binary.BigEndian.Uint32(msg.Payload[4:8]))
+	data := msg.Payload[8:]
+	if s.inflight > 0 {
+		s.inflight--
+	}
+
+	// Endgame Mode optimization: cancel redundant requests sent to other peers
+	if peersToCancel := s.pm.GetPeersToCancel(index, begin, s.addr); len(peersToCancel) > 0 {
+		s.e.broadcastCancel(s.t, index, begin, len(data), peersToCancel)
+	}
+
+	completed, err := s.pm.ReceiveBlock(index, begin, data)
+	if err != nil {
+		log.Printf("[Engine] Error processing block: %v", err)
+	}
+
+	if completed {
+		meta, _, _ := s.t.components()
+		pct, dl := s.pm.Progress()
+		s.t.mu.Lock()
+		s.t.Downloaded = dl
+		s.t.Left = meta.TotalLength - dl
+		s.t.mu.Unlock()
+
+		log.Printf("[Engine] Piece %d verified (SHA-1 OK). Progress: %.1f%% (%d/%d bytes)",
+			index, pct, dl, meta.TotalLength)
+
+		// Broadcast MsgHave to all active peers
+		s.e.broadcastHave(s.t, index)
+
+		if s.pm.IsComplete() {
+			s.t.mu.Lock()
+			if s.t.State == StateDownloading {
+				s.t.State = StateSeeding
+				log.Printf("[Engine] 🎉 Torrent %q download complete! Seeding now.", meta.Name)
+			}
+			s.t.mu.Unlock()
+		}
+	}
+
+	s.requestBlocks()
+}
+
+// handleRequest serves a block to a peer we have unchoked (seeding).
+func (s *peerSession) handleRequest(msg *peer.Message) {
+	reqIdx, reqBegin, reqLen, err := peer.ParseRequest(msg)
+	if err != nil || s.conn.AmChoking {
+		return
+	}
+	// Requests larger than 128 KiB are a protocol violation and a memory-abuse vector.
+	if reqLen <= 0 || reqLen > 128*1024 || reqBegin < 0 {
+		return
+	}
+
+	meta, pm, store := s.t.components()
+	if pm == nil || store == nil || reqIdx < 0 || reqIdx >= len(meta.Pieces) || !pm.Bitfield.HasPiece(reqIdx) {
+		return
+	}
+
+	pieceLen := int(meta.PieceLength)
+	if reqIdx == len(meta.Pieces)-1 && meta.TotalLength%meta.PieceLength != 0 {
+		pieceLen = int(meta.TotalLength % meta.PieceLength)
+	}
+
+	pieceData, err := store.ReadPiece(reqIdx, pieceLen)
+	if err != nil || reqBegin+reqLen > len(pieceData) {
+		return
+	}
+	block := pieceData[reqBegin : reqBegin+reqLen]
+	s.send(peer.FormatPiece(reqIdx, reqBegin, block))
+
+	s.t.mu.Lock()
+	s.t.Uploaded += int64(len(block))
+	s.t.mu.Unlock()
+}
+
+func idPtr(id peer.MessageID) *peer.MessageID { return &id }

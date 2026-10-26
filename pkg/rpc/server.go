@@ -2,11 +2,13 @@ package rpc
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/hernan/get-torrent/pkg/engine"
@@ -151,31 +153,28 @@ func (s *Server) dispatch(req Request) Response {
 		}
 
 	case "torrent-get":
-		var torrentsList []map[string]any
+		torrentsList := []map[string]any{}
 		if s.engine != nil {
 			for _, t := range s.engine.ListTorrents() {
-				var percentDone float64
-				if t.PieceManager != nil {
-					pct, _ := t.PieceManager.Progress()
-					percentDone = pct / 100.0
-				}
+				st := t.Status()
 				torrentsList = append(torrentsList, map[string]any{
-					"id":             t.ID,
-					"name":           t.Meta.Name,
-					"status":         t.State,
-					"totalSize":      t.Meta.TotalLength,
-					"percentDone":    percentDone,
-					"leftUntilDone":  t.Left,
-					"peersConnected": t.ActivePeers,
-					"rateDownload":   0,
-					"rateUpload":     0,
-					"uploadedEver":   t.Uploaded,
-					"downloadedEver": t.Downloaded,
+					"id":                      st.ID,
+					"name":                    st.Name,
+					"hashString":              hex.EncodeToString(st.InfoHash[:]),
+					"status":                  st.State,
+					"totalSize":               st.TotalSize,
+					"percentDone":             st.PercentDone,
+					"metadataPercentComplete": st.MetadataPercentComplete,
+					"leftUntilDone":           st.Left,
+					"peersConnected":          st.ActivePeers,
+					"rateDownload":            0,
+					"rateUpload":              0,
+					"uploadedEver":            st.Uploaded,
+					"downloadedEver":          st.Downloaded,
+					"magnetLink":              st.MagnetURI,
+					"errorString":             st.Error,
 				})
 			}
-		}
-		if torrentsList == nil {
-			torrentsList = []map[string]any{}
 		}
 		return Response{
 			Result: "success",
@@ -186,31 +185,7 @@ func (s *Server) dispatch(req Request) Response {
 		}
 
 	case "torrent-add":
-		filename, _ := req.Arguments["filename"].(string)
-		if filename != "" && s.engine != nil {
-			t, err := s.engine.AddTorrentFile(filename)
-			if err != nil {
-				return Response{
-					Result: fmt.Sprintf("failed adding torrent: %v", err),
-					Tag:    req.Tag,
-				}
-			}
-			_ = s.engine.SaveState()
-			return Response{
-				Result: "success",
-				Tag:    req.Tag,
-				Arguments: map[string]any{
-					"torrent-added": map[string]any{
-						"id":   t.ID,
-						"name": t.Meta.Name,
-					},
-				},
-			}
-		}
-		return Response{
-			Result: "filename required",
-			Tag:    req.Tag,
-		}
+		return s.torrentAdd(req)
 
 	case "torrent-start", "torrent-start-now":
 		ids := s.parseIDs(req.Arguments)
@@ -264,6 +239,58 @@ func (s *Server) dispatch(req Request) Response {
 			Result: fmt.Sprintf("method '%s' not implemented", req.Method),
 			Tag:    req.Tag,
 		}
+	}
+}
+
+// torrentAdd implements "torrent-add": "filename" may be a local .torrent path or a magnet URI,
+// and "metainfo" a base64-encoded .torrent. Torrents start immediately unless "paused" is true.
+func (s *Server) torrentAdd(req Request) Response {
+	fail := func(msg string) Response { return Response{Result: msg, Tag: req.Tag} }
+	if s.engine == nil {
+		return fail("engine unavailable")
+	}
+
+	filename, _ := req.Arguments["filename"].(string)
+	metainfoB64, _ := req.Arguments["metainfo"].(string)
+
+	var (
+		t   *engine.ManagedTorrent
+		err error
+	)
+	switch {
+	case strings.HasPrefix(strings.ToLower(filename), "magnet:"):
+		t, err = s.engine.AddMagnet(filename)
+	case filename != "":
+		t, err = s.engine.AddTorrentFile(filename)
+	case metainfoB64 != "":
+		var data []byte
+		data, err = base64.StdEncoding.DecodeString(metainfoB64)
+		if err == nil {
+			t, err = s.engine.AddTorrentBytes(data)
+		}
+	default:
+		return fail("filename or metainfo required")
+	}
+	if err != nil {
+		return fail(fmt.Sprintf("failed adding torrent: %v", err))
+	}
+
+	if paused, _ := req.Arguments["paused"].(bool); !paused {
+		_ = s.engine.StartTorrent(t.ID)
+	}
+	_ = s.engine.SaveState()
+
+	st := t.Status()
+	return Response{
+		Result: "success",
+		Tag:    req.Tag,
+		Arguments: map[string]any{
+			"torrent-added": map[string]any{
+				"id":         st.ID,
+				"name":       st.Name,
+				"hashString": hex.EncodeToString(st.InfoHash[:]),
+			},
+		},
 	}
 }
 

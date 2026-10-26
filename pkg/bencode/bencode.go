@@ -161,6 +161,41 @@ func decodeDict(r byteReader) (map[string]any, error) {
 	return dict, nil
 }
 
+// RawMessage is an already-encoded bencode value that Encode writes verbatim.
+// It preserves exact bytes (e.g. an info dictionary whose SHA-1 is the info_hash).
+type RawMessage []byte
+
+// RawDictValue returns the exact encoded bytes of key's value in a top-level bencoded dictionary.
+func RawDictValue(data []byte, key string) ([]byte, error) {
+	if len(data) == 0 || data[0] != 'd' {
+		return nil, fmt.Errorf("%w: not a dictionary", ErrInvalidBencode)
+	}
+	pos := 1
+	for pos < len(data) && data[pos] != 'e' {
+		k, n, err := DecodeLeading(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		ks, ok := k.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: dictionary key is not a string", ErrInvalidBencode)
+		}
+		pos += n
+		if pos >= len(data) {
+			return nil, ErrUnexpectedEOF
+		}
+		_, vn, err := DecodeLeading(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+		if ks == key {
+			return data[pos : pos+vn], nil
+		}
+		pos += vn
+	}
+	return nil, fmt.Errorf("key %q not found", key)
+}
+
 // Encode serializes a Go data structure into its bencode representation.
 func Encode(val any) ([]byte, error) {
 	var buf bytes.Buffer
@@ -180,6 +215,8 @@ func encodeValue(w *bytes.Buffer, val any) error {
 		fmt.Fprintf(w, "%d:%s", len(v), v)
 	case []byte:
 		fmt.Fprintf(w, "%d:%s", len(v), string(v))
+	case RawMessage:
+		w.Write(v)
 	case []any:
 		w.WriteByte('l')
 		for _, item := range v {

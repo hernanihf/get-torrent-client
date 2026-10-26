@@ -14,6 +14,7 @@ type TorrentStateEntry struct {
 	ID          int          `json:"id"`
 	InfoHashHex string       `json:"info_hash"`
 	TorrentPath string       `json:"torrent_path"`
+	MagnetURI   string       `json:"magnet_uri,omitempty"`
 	State       TorrentState `json:"state"`
 	Downloaded  int64        `json:"downloaded"`
 	Uploaded    int64        `json:"uploaded"`
@@ -53,6 +54,7 @@ func (e *Engine) SaveState() error {
 			ID:          t.ID,
 			InfoHashHex: hex.EncodeToString(t.Meta.InfoHash[:]),
 			TorrentPath: t.TorrentPath,
+			MagnetURI:   t.MagnetURI,
 			State:       t.State,
 			Downloaded:  t.Downloaded,
 			Uploaded:    t.Uploaded,
@@ -106,22 +108,35 @@ func (e *Engine) LoadState() error {
 	e.SpeedLimitUp = state.SpeedLimitUp
 
 	for _, entry := range state.Torrents {
-		if entry.TorrentPath != "" {
-			t, err := e.AddTorrentFile(entry.TorrentPath)
-			if err != nil {
-				log.Printf("[Engine] Failed restoring torrent from %s: %v", entry.TorrentPath, err)
-				continue
-			}
-			t.mu.Lock()
-			t.Downloaded = entry.Downloaded
-			t.Uploaded = entry.Uploaded
-			if entry.State == StateDownloading {
-				t.mu.Unlock()
-				_ = e.StartTorrent(t.ID)
-			} else {
-				t.State = entry.State
+		var t *ManagedTorrent
+		switch {
+		case entry.TorrentPath != "":
+			// Magnets whose metadata was fetched have a saved .torrent and resume like files.
+			t, err = e.AddTorrentFile(entry.TorrentPath)
+			if err == nil && entry.MagnetURI != "" {
+				t.mu.Lock()
+				t.MagnetURI = entry.MagnetURI
 				t.mu.Unlock()
 			}
+		case entry.MagnetURI != "":
+			t, err = e.AddMagnet(entry.MagnetURI)
+		default:
+			continue
+		}
+		if err != nil {
+			log.Printf("[Engine] Failed restoring torrent %s: %v", entry.InfoHashHex, err)
+			continue
+		}
+
+		t.mu.Lock()
+		t.Downloaded = entry.Downloaded
+		t.Uploaded = entry.Uploaded
+		if entry.State == StateDownloading || entry.State == StateSeeding {
+			t.mu.Unlock()
+			_ = e.StartTorrent(t.ID)
+		} else {
+			t.State = entry.State
+			t.mu.Unlock()
 		}
 	}
 

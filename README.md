@@ -19,6 +19,8 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
   - **HTTP/HTTPS Trackers**: Anuncios con soporte para respuestas compactas ([BEP 0023](https://www.bittorrent.org/beps/bep_0023.html)).
   - **UDP Trackers ([BEP 0015](https://www.bittorrent.org/beps/bep_0015.html))**: Protocolo binario de baja latencia con transacción en 2 fases (`connect` y `announce`).
 - **Peer Wire Protocol ([BEP 0003](https://www.bittorrent.org/beps/bep_0003.html))**: Handshake estricto de 68 bytes, framing de mensajes, intercambio de bitfields y pipelining de bloques de 16 KiB.
+- **Magnet Links ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) / [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html))**: Descarga del diccionario `info` desde peers vía `ut_metadata`, verificación SHA-1 contra el `info_hash`, persistencia como `.torrent` en `config/torrents/` y servicio de metadatos a otros peers.
+- **Multi-tracker (`announce-list`)**: Anuncio concurrente a todos los trackers con fusión y deduplicación de peers.
 
 ### 🧠 Swarm & Algoritmos de Descarga
 - **Planificación Rarest-First**: Mapea en tiempo real la disponibilidad de piezas en el enjambre y prioriza las piezas más escasas para optimizar la salud del enjambre P2P.
@@ -34,7 +36,7 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
 - **Protección CSRF**: Autenticación mediante token de sesión `X-Transmission-Session-Id` (código HTTP 409 inicial).
 - **Control Total de Torrents**:
   - `torrent-get`: Estadísticas en tiempo real (progreso, velocidades, peers conectados, tamaños).
-  - `torrent-add`: Carga de torrents por ruta local.
+  - `torrent-add`: Carga por ruta local, enlace magnet (`filename`) o `.torrent` en base64 (`metainfo`); inicia automáticamente salvo `"paused": true`.
   - `torrent-start` / `torrent-start-now`: Reanudación de descargas concurrentes.
   - `torrent-stop`: Pausa controlada con desconexión ordenada de sockets.
   - `torrent-remove`: Eliminación de torrents con opción `delete-local-data`.
@@ -139,7 +141,9 @@ Paquetes testeados:
 - `pkg/peer`: Handshake BitTorrent de 68 bytes, framing de mensajes y simulación de conexión de sockets con `net.Pipe`.
 - `pkg/storage`: Verificación SHA-1, ensamblado de bloques de 16 KB, escritura multifile y algoritmos Rarest-First y Endgame.
 - `pkg/rpc`: Protección contra CSRF 409 y endpoints de control de torrents.
-- `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`).
+- `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`) y descarga end-to-end desde un magnet entre dos engines reales.
+- `pkg/peer`, `pkg/metadata`: Mensajes BEP 0010/0009 y ensamblado/verificación de metadatos.
+- `pkg/metainfo`: Info-hash sobre bytes crudos, `announce-list` y rechazo de rutas inseguras (`..`, absolutas).
 
 ---
 
@@ -160,7 +164,9 @@ Consulta [AGENTS.md](AGENTS.md) para más detalles sobre las reglas del equipo y
 - [x] **Fase 1: Descarga y Almacenamiento**: Piece manager (16 KB), verificación SHA-1 y escritura multi-archivo en disco.
 - [x] **Fase 2: Estrategia P2P**: Algoritmo Rarest-First, modo Endgame con cancelaciones y servicio de piezas (seeding).
 - [x] **Fase 3: Transmission RPC Completo**: Endpoints de control de ciclo de vida (`start`, `stop`, `remove`), configuración en caliente y persistencia de sesión (`state.json`).
-- [ ] **Fase 4: Magnet Links & DHT**: Parser de enlaces magnet (`magnet:?xt=...`), protocolo de metadatos `ut_metadata` ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)) y Kademlia DHT ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)).
+- [ ] **Fase 4: Magnet Links & DHT**
+  - [x] **4a – Magnet Links**: Parser de enlaces magnet (`magnet:?xt=...`), Extension Protocol ([BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)) y descarga/servicio de metadatos `ut_metadata` ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)).
+  - [ ] **4b – Kademlia DHT** ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)): necesario para magnets sin trackers (`tr=`).
 - [ ] **Fase 5: Clientes & WebUI**: CLI nativo (`get-torrent-cli`) y Web Dashboard interactivo integrado en el daemon.
 
 ---
