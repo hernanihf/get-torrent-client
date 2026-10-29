@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -71,8 +71,11 @@ type ManagedTorrent struct {
 	down, up       rateMeter
 	peerInfos      map[*peer.Conn]*peerInfo
 	trackerRecords map[string]*trackerRecord
-	nextAnnounce   time.Time
+	dht            dhtSchedule
+	runGen         int           // incremented by every start and stop; results from older runs are dropped
+	sendCompleted  bool          // the download finished during this run: trackers get "completed"
 	reannounce     chan struct{} // wakes the discovery loop early (torrent-reannounce)
+	discoveryWake  chan struct{} // an announce finished or became due; reschedule
 	rechoke        chan struct{} // wakes the choker early (interest changes, freed slots)
 	recheck        float64       // torrent-verify progress, 0..1
 	restartAfter   bool          // restart once verification finishes
@@ -285,6 +288,9 @@ type Engine struct {
 
 	saveMu sync.Mutex     // serializes SaveState (periodic and shutdown saves share the files)
 	bg     sync.WaitGroup // background loops that Close waits for before stopping torrents
+
+	announceKey uint32         // tracker "key": identifies this client across IP changes
+	stopping    sync.WaitGroup // "stopped" announces that Close waits for
 }
 
 // removedTorrent remembers a removal for torrent-get's "recently-active" ids.
@@ -299,8 +305,12 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 	copy(peerID[:8], []byte("-GT0001-")) // Client prefix: Get-Torrent 0.0.1
 	_, _ = rand.Read(peerID[8:])
 
+	var key [4]byte
+	_, _ = rand.Read(key[:])
+
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
+		announceKey:      binary.BigEndian.Uint32(key[:]),
 		AltSpeedDown:     50,
 		AltSpeedUp:       50,
 		sessionDown:      bandwidth.NewLimiter(),
@@ -362,23 +372,24 @@ func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path, dir string) (*Managed
 	pm := storage.NewPieceManager(meta, store)
 
 	t := &ManagedTorrent{
-		ID:           e.nextID,
-		Meta:         meta,
-		TorrentPath:  path,
-		Storage:      store,
-		PieceManager: pm,
-		State:        StateQueued,
-		Downloaded:   0,
-		Uploaded:     0,
-		Left:         meta.TotalLength,
-		DownloadDir:  dir,
-		AddedDate:    time.Now(),
-		stopChan:     make(chan struct{}),
-		reannounce:   make(chan struct{}, 1),
-		rechoke:      make(chan struct{}, 1),
-		limits:       defaultTorrentLimits(),
-		downLimiter:  bandwidth.NewLimiter(),
-		upLimiter:    bandwidth.NewLimiter(),
+		ID:            e.nextID,
+		Meta:          meta,
+		TorrentPath:   path,
+		Storage:       store,
+		PieceManager:  pm,
+		State:         StateQueued,
+		Downloaded:    0,
+		Uploaded:      0,
+		Left:          meta.TotalLength,
+		DownloadDir:   dir,
+		AddedDate:     time.Now(),
+		stopChan:      make(chan struct{}),
+		reannounce:    make(chan struct{}, 1),
+		discoveryWake: make(chan struct{}, 1),
+		rechoke:       make(chan struct{}, 1),
+		limits:        defaultTorrentLimits(),
+		downLimiter:   bandwidth.NewLimiter(),
+		upLimiter:     bandwidth.NewLimiter(),
 	}
 	e.nextID++
 	e.torrents[meta.InfoHash] = t
@@ -428,11 +439,14 @@ func (e *Engine) StartTorrent(id int) error {
 	}
 	t.startDate = time.Now()
 	t.LastError = ""
+	t.sendCompleted = false
+	t.runGen++
+	gen := t.runGen
 	t.stopChan = make(chan struct{})
 	stop := t.stopChan
 	t.mu.Unlock()
 
-	go e.runTorrent(t, stop)
+	go e.runTorrent(t, stop, gen)
 	go e.runChoker(t, stop)
 	return nil
 }
@@ -470,8 +484,10 @@ func (e *Engine) StopTorrent(id int) error {
 	t.activeConns = nil
 	t.ActivePeers = 0
 	name := t.Meta.Name
+	stopped := t.stoppedAnnouncesLocked()
 	t.mu.Unlock()
 
+	e.sendStopped(t, stopped)
 	log.Printf("[Engine] Stopped torrent: %q (ID: %d)", name, t.ID)
 	return nil
 }
@@ -518,128 +534,6 @@ func (e *Engine) setError(t *ManagedTorrent, err error) {
 		t.setStateLocked(StateError)
 		t.LastError = err.Error()
 	}
-}
-
-// reannounceInterval is how often trackers and the DHT are asked again for new peers;
-// retryInterval is used instead while no peer is connected.
-var (
-	reannounceInterval = 5 * time.Minute
-	retryInterval      = time.Minute
-)
-
-var errNoPeerSources = errors.New("no peer sources: torrent has no trackers and DHT is disabled")
-
-// dhtLookupTimeout bounds one DHT get_peers/announce_peer round.
-const dhtLookupTimeout = time.Minute
-
-func (e *Engine) runTorrent(t *ManagedTorrent, stop <-chan struct{}) {
-	meta, _, _ := t.components()
-	log.Printf("[Engine] Starting download loop for %q", meta.Name)
-
-	for {
-		err := e.discoverPeers(t, stop)
-		if errors.Is(err, errNoPeerSources) {
-			e.setError(t, err)
-			return
-		}
-		if err != nil {
-			// Unreachable trackers or DHT are transient: report and retry, like Transmission.
-			log.Printf("[Engine] Peer discovery failed for %q: %v", meta.Name, err)
-		}
-
-		t.mu.Lock()
-		t.LastError = ""
-		if err != nil {
-			t.LastError = err.Error()
-		}
-		wait := reannounceInterval
-		if t.ActivePeers == 0 {
-			wait = retryInterval
-		}
-		t.nextAnnounce = time.Now().Add(wait)
-		reannounce := t.reannounce
-		t.mu.Unlock()
-
-		timer := time.NewTimer(wait)
-		select {
-		case <-stop:
-			timer.Stop()
-			return
-		case <-timer.C:
-		case <-reannounce:
-			timer.Stop()
-		}
-	}
-}
-
-// discoverPeers queries every peer source (trackers and DHT) concurrently and dials new peers as
-// soon as each source answers. It fails only if no source could be queried successfully.
-func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
-	t.mu.RLock()
-	meta := t.Meta
-	trackers := meta.Trackers()
-	if len(trackers) == 0 {
-		trackers = t.trackers
-	}
-	t.mu.RUnlock()
-
-	type result struct {
-		source PeerSource
-		peers  []tracker.Peer
-		err    error
-	}
-	var sources []func() result
-
-	if len(trackers) > 0 {
-		sources = append(sources, func() result {
-			peers, err := e.announce(t, trackers)
-			return result{SourceTracker, peers, err}
-		})
-	}
-	// Private torrents must not leak to the DHT (BEP 0027).
-	if server := e.dhtServer(); server != nil && !meta.Private {
-		sources = append(sources, func() result {
-			ctx, cancel := context.WithTimeout(e.ctx, dhtLookupTimeout)
-			defer cancel()
-			go func() {
-				select {
-				case <-stop:
-					cancel()
-				case <-ctx.Done():
-				}
-			}()
-			peers, err := server.Announce(ctx, meta.InfoHash, e.Port)
-			return result{SourceDHT, peers, err}
-		})
-	}
-	if len(sources) == 0 {
-		return errNoPeerSources
-	}
-
-	results := make(chan result, len(sources))
-	for _, src := range sources {
-		go func(src func() result) { results <- src() }(src)
-	}
-
-	var errs []error
-	for range sources {
-		var r result
-		select {
-		case r = <-results:
-		case <-stop:
-			return nil
-		}
-		if r.err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", r.source, r.err))
-			continue
-		}
-		log.Printf("[Engine] %s returned %d peers for %q", r.source, len(r.peers), meta.Name)
-		e.connectPeers(t, r.peers, r.source)
-	}
-	if len(errs) == len(sources) {
-		return errors.Join(errs...)
-	}
-	return nil
 }
 
 // connectPeers dials peers that are not already connected or being dialed, within the peer limit.
@@ -784,69 +678,6 @@ func (e *Engine) unregisterConn(t *ManagedTorrent, conn *peer.Conn) {
 	}
 }
 
-// announce queries the given trackers concurrently and merges the de-duplicated peer lists.
-// It fails only if no tracker could be reached.
-func (e *Engine) announce(t *ManagedTorrent, trackers []string) ([]tracker.Peer, error) {
-	t.mu.RLock()
-	params := tracker.AnnounceParams{
-		InfoHash:   t.Meta.InfoHash,
-		PeerID:     e.PeerID,
-		Port:       e.Port,
-		Uploaded:   t.Uploaded,
-		Downloaded: t.Downloaded,
-		Left:       t.Left,
-		Compact:    true,
-	}
-	if t.PieceManager == nil {
-		// Size unknown until metadata arrives; a non-zero value marks us as a leecher.
-		params.Left = 1
-	}
-	t.mu.RUnlock()
-
-	type result struct {
-		peers []tracker.Peer
-		err   error
-	}
-	results := make(chan result, len(trackers))
-	for _, u := range trackers {
-		p := params
-		p.AnnounceURL = u
-		go func() {
-			resp, err := tracker.Announce(p)
-			if err != nil {
-				t.recordAnnounce(p.AnnounceURL, 0, err)
-				results <- result{err: fmt.Errorf("%s: %w", p.AnnounceURL, err)}
-				return
-			}
-			t.recordAnnounce(p.AnnounceURL, len(resp.Peers), nil)
-			results <- result{peers: resp.Peers}
-		}()
-	}
-
-	seen := make(map[string]bool)
-	var peers []tracker.Peer
-	var lastErr error
-	succeeded := 0
-	for range trackers {
-		r := <-results
-		if r.err != nil {
-			lastErr = r.err
-			continue
-		}
-		succeeded++
-		for _, p := range r.peers {
-			if key := p.String(); !seen[key] {
-				seen[key] = true
-				peers = append(peers, p)
-			}
-		}
-	}
-	if succeeded == 0 {
-		return nil, fmt.Errorf("all %d trackers failed, last error: %w", len(trackers), lastErr)
-	}
-	return peers, nil
-}
-
 func (e *Engine) broadcastHave(t *ManagedTorrent, pieceIndex int) {
 	haveMsg := peer.FormatHave(pieceIndex)
 	for _, c := range t.conns() {
@@ -909,6 +740,8 @@ func (e *Engine) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	// Let trackers know we are gone; each announce is bounded by stoppedAnnounceTimeout.
+	e.stopping.Wait()
 
 	if server := e.dhtServer(); server != nil {
 		if err := server.Close(); err != nil {

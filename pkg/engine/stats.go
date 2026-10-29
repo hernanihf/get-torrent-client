@@ -155,13 +155,8 @@ type TrackerStatus struct {
 	LastAnnounceResult    string
 	LastAnnouncePeerCount int
 	NextAnnounceTime      int64
-}
-
-type trackerRecord struct {
-	time      time.Time
-	succeeded bool
-	result    string
-	peers     int
+	SeederCount           int64 // -1 if unknown
+	LeecherCount          int64 // -1 if unknown
 }
 
 // sessionStats tracks transfer totals for the current daemon session (session-stats).
@@ -228,20 +223,6 @@ func (e *Engine) recordUpload(t *ManagedTorrent, pi *peerInfo, n int) {
 	t.mu.Lock()
 	t.Uploaded += int64(n)
 	t.activityDate = now
-	t.mu.Unlock()
-}
-
-// recordAnnounce stores the outcome of one tracker announce.
-func (t *ManagedTorrent) recordAnnounce(url string, peers int, err error) {
-	rec := &trackerRecord{time: time.Now(), succeeded: err == nil, result: "Success", peers: peers}
-	if err != nil {
-		rec.result = err.Error()
-	}
-	t.mu.Lock()
-	if t.trackerRecords == nil {
-		t.trackerRecords = make(map[string]*trackerRecord)
-	}
-	t.trackerRecords[url] = rec
 	t.mu.Unlock()
 }
 
@@ -313,8 +294,12 @@ func (t *ManagedTorrent) TrackerList() []TrackerStatus {
 				ts.LastAnnounceResult = rec.result
 				ts.LastAnnouncePeerCount = rec.peers
 			}
-			if !t.nextAnnounce.IsZero() {
-				ts.NextAnnounceTime = t.nextAnnounce.Unix()
+			ts.SeederCount, ts.LeecherCount = -1, -1
+			if rec := t.trackerRecords[u]; rec != nil {
+				ts.SeederCount, ts.LeecherCount = rec.seeders, rec.leechers
+				if rec.gen == t.runGen && !rec.next.IsZero() {
+					ts.NextAnnounceTime = rec.next.Unix()
+				}
 			}
 			out = append(out, ts)
 		}

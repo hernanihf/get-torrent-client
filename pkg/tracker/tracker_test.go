@@ -2,9 +2,9 @@ package tracker
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/hernan/get-torrent/pkg/bencode"
@@ -121,5 +121,5 @@ func TestHTTPAnnounceFailure(t *testing.T) {
 }
 
 func containsSubstring(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || fmt.Sprintf("%v", s) != "")
+	return strings.Contains(s, sub)
 }

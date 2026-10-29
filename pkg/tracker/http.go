@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,31 +18,22 @@ var (
 	ErrTrackerFailure = errors.New("tracker returned failure reason")
 )
 
-// AnnounceParams represents parameters sent in an announce request.
-type AnnounceParams struct {
-	AnnounceURL string
-	InfoHash    [20]byte
-	PeerID      [20]byte
-	Port        uint16
-	Uploaded    int64
-	Downloaded  int64
-	Left        int64
-	Compact     bool
-}
+// maxHTTPResponseBytes bounds a tracker response body; peer lists are a few KiB at most.
+const maxHTTPResponseBytes = 4 << 20
 
-// AnnounceResponse represents the parsed response from an announce request.
-type AnnounceResponse struct {
-	Interval int64
-	Peers    []Peer
-}
+var defaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // HTTPAnnounce queries an HTTP/HTTPS tracker for peers using a default HTTP client.
 func HTTPAnnounce(params AnnounceParams) (*AnnounceResponse, error) {
-	return HTTPAnnounceWithClient(params, &http.Client{Timeout: 15 * time.Second})
+	return httpAnnounce(context.Background(), params, defaultHTTPClient)
 }
 
 // HTTPAnnounceWithClient queries an HTTP/HTTPS tracker for peers using the provided HTTP client.
 func HTTPAnnounceWithClient(params AnnounceParams, client *http.Client) (*AnnounceResponse, error) {
+	return httpAnnounce(context.Background(), params, client)
+}
+
+func httpAnnounce(ctx context.Context, params AnnounceParams, client *http.Client) (*AnnounceResponse, error) {
 	u, err := url.Parse(params.AnnounceURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid announce url: %w", err)
@@ -57,6 +49,18 @@ func HTTPAnnounceWithClient(params AnnounceParams, client *http.Client) (*Announ
 	if params.Compact {
 		q.Set("compact", "1")
 	}
+	if ev := params.Event.String(); ev != "" {
+		q.Set("event", ev)
+	}
+	if params.Key != 0 {
+		q.Set("key", fmt.Sprintf("%08X", params.Key))
+	}
+	if params.NumWant > 0 {
+		q.Set("numwant", strconv.Itoa(params.NumWant))
+	}
+	if params.TrackerID != "" {
+		q.Set("trackerid", params.TrackerID)
+	}
 
 	rawQuery := q.Encode()
 	// Append raw percent-encoded info_hash and peer_id
@@ -67,9 +71,13 @@ func HTTPAnnounceWithClient(params AnnounceParams, client *http.Client) (*Announ
 	u.RawQuery = rawQuery
 
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = defaultHTTPClient
 	}
-	resp, err := client.Get(u.String())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("building tracker request: %w", err)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("tracker request failed: %w", err)
 	}
@@ -79,7 +87,7 @@ func HTTPAnnounceWithClient(params AnnounceParams, client *http.Client) (*Announ
 		return nil, fmt.Errorf("tracker returned HTTP status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("reading tracker response body: %w", err)
 	}
@@ -102,17 +110,26 @@ func parseHTTPResponse(body []byte) (*AnnounceResponse, error) {
 		return nil, fmt.Errorf("%w: %s", ErrTrackerFailure, failureReason)
 	}
 
-	interval, _ := dict["interval"].(int64)
+	out := &AnnounceResponse{Seeders: -1, Leechers: -1}
+	out.Interval, _ = dict["interval"].(int64)
+	out.MinInterval, _ = dict["min interval"].(int64)
+	out.TrackerID, _ = dict["tracker id"].(string)
+	out.Warning, _ = dict["warning message"].(string)
+	if n, ok := dict["complete"].(int64); ok {
+		out.Seeders = n
+	}
+	if n, ok := dict["incomplete"].(int64); ok {
+		out.Leechers = n
+	}
 
-	var peers []Peer
 	switch p := dict["peers"].(type) {
 	case string:
 		// Compact format (BEP 0023)
-		var err error
-		peers, err = UnmarshalPeers([]byte(p))
+		peers, err := UnmarshalPeers([]byte(p))
 		if err != nil {
 			return nil, fmt.Errorf("failed unmarshaling compact peers: %w", err)
 		}
+		out.Peers = peers
 	case []any:
 		// Dictionary list format
 		for _, item := range p {
@@ -124,7 +141,7 @@ func parseHTTPResponse(body []byte) (*AnnounceResponse, error) {
 			portNum, _ := pDict["port"].(int64)
 			ip := net.ParseIP(ipStr)
 			if ip != nil && portNum > 0 && portNum <= 65535 {
-				peers = append(peers, Peer{
+				out.Peers = append(out.Peers, Peer{
 					IP:   ip,
 					Port: uint16(portNum),
 				})
@@ -132,10 +149,7 @@ func parseHTTPResponse(body []byte) (*AnnounceResponse, error) {
 		}
 	}
 
-	return &AnnounceResponse{
-		Interval: interval,
-		Peers:    peers,
-	}, nil
+	return out, nil
 }
 
 func escapeBinary(data []byte) string {

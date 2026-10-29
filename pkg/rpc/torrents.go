@@ -291,9 +291,9 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 				"lastAnnounceSucceeded": tr.LastAnnounceSucceeded, "lastAnnounceTime": tr.LastAnnounceTime,
 				"lastAnnounceTimedOut": strings.Contains(tr.LastAnnounceResult, "timeout"),
 				"lastScrapeResult":     "", "lastScrapeStartTime": 0, "lastScrapeSucceeded": false,
-				"lastScrapeTime": 0, "lastScrapeTimedOut": false, "leecherCount": -1,
+				"lastScrapeTime": 0, "lastScrapeTimedOut": false, "leecherCount": tr.LeecherCount,
 				"nextAnnounceTime": tr.NextAnnounceTime, "nextScrapeTime": 0, "scrape": "",
-				"scrapeState": 0, "seederCount": -1, "sitename": sitename(tr.Announce), "tier": tr.Tier,
+				"scrapeState": 0, "seederCount": tr.SeederCount, "sitename": sitename(tr.Announce), "tier": tr.Tier,
 			})
 		}
 		return out

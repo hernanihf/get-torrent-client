@@ -317,6 +317,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 			s.t.mu.Lock()
 			if s.t.State == StateDownloading {
 				s.t.setStateLocked(StateSeeding)
+				s.t.downloadFinishedLocked()
 				log.Printf("[Engine] 🎉 Torrent %q download complete! Seeding now.", meta.Name)
 			}
 			s.t.mu.Unlock()

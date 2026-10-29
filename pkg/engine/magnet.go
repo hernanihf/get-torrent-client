@@ -45,21 +45,22 @@ func (e *Engine) addMagnet(uri, dir string) (*ManagedTorrent, error) {
 		dir = e.DownloadDir
 	}
 	t := &ManagedTorrent{
-		ID:          e.nextID,
-		Meta:        &metainfo.TorrentMeta{InfoHash: m.InfoHash, Name: name},
-		MagnetURI:   uri,
-		State:       StateQueued,
-		DownloadDir: dir,
-		AddedDate:   time.Now(),
-		stopChan:    make(chan struct{}),
-		reannounce:  make(chan struct{}, 1),
-		rechoke:     make(chan struct{}, 1),
-		metaReady:   make(chan struct{}),
-		limits:      defaultTorrentLimits(),
-		downLimiter: bandwidth.NewLimiter(),
-		upLimiter:   bandwidth.NewLimiter(),
-		trackers:    m.Trackers,
-		metadata:    metadata.NewAssembler(m.InfoHash),
+		ID:            e.nextID,
+		Meta:          &metainfo.TorrentMeta{InfoHash: m.InfoHash, Name: name},
+		MagnetURI:     uri,
+		State:         StateQueued,
+		DownloadDir:   dir,
+		AddedDate:     time.Now(),
+		stopChan:      make(chan struct{}),
+		reannounce:    make(chan struct{}, 1),
+		discoveryWake: make(chan struct{}, 1),
+		rechoke:       make(chan struct{}, 1),
+		metaReady:     make(chan struct{}),
+		limits:        defaultTorrentLimits(),
+		downLimiter:   bandwidth.NewLimiter(),
+		upLimiter:     bandwidth.NewLimiter(),
+		trackers:      m.Trackers,
+		metadata:      metadata.NewAssembler(m.InfoHash),
 	}
 	e.nextID++
 	e.torrents[m.InfoHash] = t
