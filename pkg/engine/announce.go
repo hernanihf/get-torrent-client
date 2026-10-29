@@ -152,7 +152,7 @@ func (t *ManagedTorrent) finishAnnounce(gen int, p pendingAnnounce, resp *tracke
 		rec.failures++
 		backoff := maxRetryBackoff
 		if shift := rec.failures - 1; shift < 16 {
-			backoff = min(retryInterval<<shift, maxRetryBackoff)
+			backoff = min(t.timing.retry<<shift, maxRetryBackoff)
 		}
 		rec.next = now.Add(backoff)
 		t.updateDiscoveryErrorLocked()
@@ -187,7 +187,7 @@ func (t *ManagedTorrent) finishAnnounce(gen int, p pendingAnnounce, resp *tracke
 	wait := interval
 	if t.ActivePeers == 0 {
 		// Nobody to talk to: ask again sooner, but never before the tracker's minimum.
-		wait = min(interval, max(retryInterval, rec.minInterval, minTrackerInterval))
+		wait = min(interval, max(t.timing.retry, rec.minInterval, minTrackerInterval))
 	}
 	rec.next = now.Add(wait)
 	t.updateDiscoveryErrorLocked()
@@ -224,7 +224,7 @@ func (t *ManagedTorrent) updateDiscoveryErrorLocked() {
 func (t *ManagedTorrent) nextDiscovery(now time.Time, dhtEnabled bool) time.Duration {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	next := now.Add(reannounceInterval)
+	next := now.Add(t.timing.reannounce)
 	for _, url := range t.trackerURLsLocked() {
 		rec := t.trackerRecords[url]
 		if rec == nil || rec.gen != t.runGen {
@@ -399,9 +399,9 @@ func (t *ManagedTorrent) finishDHTLookup(gen int, err error) {
 	if gen != t.runGen || t.dht.gen != gen {
 		return
 	}
-	wait := reannounceInterval
+	wait := t.timing.reannounce
 	if t.ActivePeers == 0 || err != nil {
-		wait = retryInterval
+		wait = t.timing.retry
 	}
 	t.dht = dhtSchedule{gen: gen, next: time.Now().Add(wait), err: err, done: true}
 	t.updateDiscoveryErrorLocked()

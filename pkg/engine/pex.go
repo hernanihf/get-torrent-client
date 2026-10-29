@@ -15,7 +15,7 @@ import (
 // dialled. PEX is never used for private torrents (BEP 0027) or when disabled in the session.
 
 // pexInterval is the minimum time between ut_pex messages to one peer (BEP 0011: one minute),
-// copied into each engine when created (Engine.pexEvery).
+// copied into each engine when created (Engine.timing).
 var pexInterval = time.Minute
 
 // pexAllowed reports whether t may use peer exchange.
@@ -79,7 +79,7 @@ func (s *peerSession) sendPex() {
 		return
 	}
 	now := s.now()
-	if s.pex.sent != nil && now.Sub(s.pex.last) < s.e.pexEvery {
+	if s.pex.sent != nil && now.Sub(s.pex.last) < s.e.timing.pexEvery {
 		return
 	}
 

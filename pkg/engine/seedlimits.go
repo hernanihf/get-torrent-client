@@ -102,7 +102,7 @@ func (e *Engine) seedLimitReached(t *ManagedTorrent, now time.Time) string {
 
 // runSeedLimits stops t once it reaches a seeding limit, marking it finished.
 func (e *Engine) runSeedLimits(t *ManagedTorrent, stop <-chan struct{}) {
-	ticker := time.NewTicker(seedCheckInterval)
+	ticker := time.NewTicker(e.timing.seedCheck)
 	defer ticker.Stop()
 	for {
 		select {

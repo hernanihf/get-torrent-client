@@ -82,6 +82,7 @@ type ManagedTorrent struct {
 
 	files       FileSelection // per-file wanted/priority; zero value means the default (all, normal)
 	finished    bool          // stopped by a seeding limit (isFinished)
+	timing      engineTiming  // the engine's, copied at start for the discovery schedule
 	limits      TorrentLimits
 	downLimiter *bandwidth.Limiter // per-torrent limiters; nil means unlimited
 	upLimiter   *bandwidth.Limiter
@@ -310,11 +311,27 @@ type Engine struct {
 	saveMu sync.Mutex     // serializes SaveState (periodic and shutdown saves share the files)
 	bg     sync.WaitGroup // background loops that Close waits for before stopping torrents
 
-	peerTick time.Duration // per-peer housekeeping period (peerTickInterval)
-	pexEvery time.Duration // minimum time between ut_pex messages to a peer (pexInterval)
+	timing engineTiming
 
 	announceKey uint32         // tracker "key": identifies this client across IP changes
 	stopping    sync.WaitGroup // "stopped" announces that Close waits for
+}
+
+// engineTiming holds the intervals tests may shorten. Each engine copies the package defaults
+// when created, so a test changing them never races with goroutines of another engine.
+type engineTiming struct {
+	peerTick   time.Duration // per-peer housekeeping (peerTickInterval)
+	pexEvery   time.Duration // between ut_pex messages to a peer (pexInterval)
+	retry      time.Duration // re-query with no peers, first failure back-off (retryInterval)
+	reannounce time.Duration // DHT re-query (reannounceInterval)
+	seedCheck  time.Duration // seeding limit checks (seedCheckInterval)
+}
+
+func defaultTiming() engineTiming {
+	return engineTiming{
+		peerTick: peerTickInterval, pexEvery: pexInterval, retry: retryInterval,
+		reannounce: reannounceInterval, seedCheck: seedCheckInterval,
+	}
 }
 
 // removedTorrent remembers a removal for torrent-get's "recently-active" ids.
@@ -335,8 +352,7 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
 		announceKey:      binary.BigEndian.Uint32(key[:]),
-		peerTick:         peerTickInterval,
-		pexEvery:         pexInterval,
+		timing:           defaultTiming(),
 		AltSpeedDown:     50,
 		AltSpeedUp:       50,
 		SeedRatioLimit:   2,
@@ -484,6 +500,7 @@ func (e *Engine) startTorrent(t *ManagedTorrent) error {
 	t.LastError = ""
 	t.sendCompleted = false
 	t.finished = false
+	t.timing = e.timing
 	t.runGen++
 	gen := t.runGen
 	t.stopChan = make(chan struct{})

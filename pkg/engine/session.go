@@ -26,7 +26,7 @@ const (
 )
 
 // peerTickInterval drives periodic per-peer work (metadata re-requests, keep-alives, PEX).
-// Each engine copies it when created (Engine.peerTick), so tests can speed up their own engines
+// Each engine copies it when created (Engine.timing), so tests can speed up their own engines
 // without racing with sessions of other engines.
 var peerTickInterval = 10 * time.Second
 
@@ -127,7 +127,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	s.onExtHandshake() // the handshake may have arrived during Dial
 	s.requestBlocks()
 
-	ticker := time.NewTicker(e.peerTick)
+	ticker := time.NewTicker(e.timing.peerTick)
 	defer ticker.Stop()
 
 	var chokeReq <-chan bool // nil (never ready) for unregistered connections
