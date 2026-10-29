@@ -283,6 +283,9 @@ type Engine struct {
 	IdleSeedingLimit        int // minutes
 	IdleSeedingLimitEnabled bool
 
+	// PEXEnabled allows BEP 0011 peer exchange for public torrents.
+	PEXEnabled bool
+
 	// Session-wide limiters, kept in sync with the settings above by applyLimitsLocked.
 	sessionDown      *bandwidth.Limiter
 	sessionUp        *bandwidth.Limiter
@@ -333,6 +336,7 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 		AltSpeedUp:       50,
 		SeedRatioLimit:   2,
 		IdleSeedingLimit: 30,
+		PEXEnabled:       true,
 		sessionDown:      bandwidth.NewLimiter(),
 		sessionUp:        bandwidth.NewLimiter(),
 		stats:            sessionStats{started: time.Now()},

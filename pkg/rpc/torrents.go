@@ -232,7 +232,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 			"fromIncoming": c.st.PeersFrom[engine.SourceIncoming],
 			"fromLpd":      0,
 			"fromLtep":     0,
-			"fromPex":      0,
+			"fromPex":      c.st.PeersFrom[engine.SourcePEX],
 			"fromTracker":  c.st.PeersFrom[engine.SourceTracker],
 		}
 	},

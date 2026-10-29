@@ -8,8 +8,8 @@ import (
 func TestSessionSetRejectsUnsupportedChanges(t *testing.T) {
 	env := newEnv(t, Options{})
 
-	r := env.call(t, "session-set", map[string]any{"pex-enabled": true, "encryption": "required", "speed-limit-down": 77})
-	if r.Result == "success" || !strings.Contains(r.Result, "encryption, pex-enabled") {
+	r := env.call(t, "session-set", map[string]any{"lpd-enabled": true, "encryption": "required", "speed-limit-down": 77})
+	if r.Result == "success" || !strings.Contains(r.Result, "encryption, lpd-enabled") {
 		t.Errorf("expected the unsupported keys to be named, got %q", r.Result)
 	}
 	if env.eng.Settings().SpeedLimitDown == 77 {

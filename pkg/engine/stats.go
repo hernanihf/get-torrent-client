@@ -67,6 +67,7 @@ const (
 	SourceIncoming PeerSource = "incoming"
 	SourceTracker  PeerSource = "tracker"
 	SourceDHT      PeerSource = "dht"
+	SourcePEX      PeerSource = "pex"
 )
 
 // peerInfo is the reportable state of one connection. The peer session owns the Conn and
@@ -84,6 +85,7 @@ type peerInfo struct {
 	peerIsChoked       bool // we are choking the peer
 	peerIsInterested   bool // the peer is interested in us
 	piecesHave         int
+	listenPort         int // from the extension handshake ("p"); 0 if unknown
 	down, up           rateMeter
 	connected          time.Time // when the connection was registered
 	chokeReq           chan bool // choker decisions for the session: true = choke
@@ -95,9 +97,9 @@ func (pi *peerInfo) publish(c *peer.Conn) {
 	for _, b := range c.Bitfield {
 		have += bits.OnesCount8(b)
 	}
-	name := ""
+	name, listenPort := "", 0
 	if c.PeerExt != nil {
-		name = c.PeerExt.ClientName
+		name, listenPort = c.PeerExt.ClientName, int(c.PeerExt.ListenPort)
 	}
 	if name == "" {
 		name = clientFromPeerID(c.PeerID)
@@ -109,6 +111,7 @@ func (pi *peerInfo) publish(c *peer.Conn) {
 	pi.peerIsInterested = c.Interested
 	pi.piecesHave = have
 	pi.clientName = name
+	pi.listenPort = listenPort
 	pi.mu.Unlock()
 }
 

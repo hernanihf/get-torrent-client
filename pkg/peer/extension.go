@@ -21,6 +21,12 @@ const (
 	// Peers use this ID when sending ut_metadata messages to us.
 	LocalUTMetadataID uint8 = 2
 
+	// ExtUTPex is the extension name for BEP 0011 peer exchange.
+	ExtUTPex = "ut_pex"
+
+	// LocalUTPexID is the extended message ID we advertise for ut_pex.
+	LocalUTPexID uint8 = 1
+
 	// MetadataPieceSize is the fixed size of each metadata piece (BEP 0009).
 	MetadataPieceSize = 16 * 1024
 
@@ -43,6 +49,8 @@ type ExtHandshake struct {
 	M            map[string]uint8
 	MetadataSize int
 	ClientName   string
+	// ListenPort is the sender's TCP listen port ("p"); 0 if not given.
+	ListenPort uint16
 }
 
 // FormatExtended builds a MsgExtended (ID 20) message: <extended id><payload>.
@@ -61,13 +69,32 @@ const MaxRequestQueue = 250
 // FormatExtHandshake builds our extension handshake advertising ut_metadata.
 // metadataSize is omitted when zero (we do not yet have the info dictionary).
 func FormatExtHandshake(metadataSize int) *Message {
+	return FormatExtHandshakeWith(ExtHandshakeOptions{MetadataSize: metadataSize})
+}
+
+// ExtHandshakeOptions selects what our extension handshake advertises.
+type ExtHandshakeOptions struct {
+	MetadataSize int    // omitted when zero (we do not yet have the info dictionary)
+	ListenPort   uint16 // our TCP port ("p"), so peers we dialled can share it via PEX
+	PEX          bool   // advertise ut_pex; never for private torrents (BEP 0027)
+}
+
+// FormatExtHandshakeWith builds our extension handshake.
+func FormatExtHandshakeWith(opts ExtHandshakeOptions) *Message {
+	m := map[string]any{ExtUTMetadata: int(LocalUTMetadataID)}
+	if opts.PEX {
+		m[ExtUTPex] = int(LocalUTPexID)
+	}
 	dict := map[string]any{
-		"m":    map[string]any{ExtUTMetadata: int(LocalUTMetadataID)},
+		"m":    m,
 		"v":    "get-torrent 0.0.1",
 		"reqq": MaxRequestQueue,
 	}
-	if metadataSize > 0 {
-		dict["metadata_size"] = metadataSize
+	if opts.MetadataSize > 0 {
+		dict["metadata_size"] = opts.MetadataSize
+	}
+	if opts.ListenPort > 0 {
+		dict["p"] = int(opts.ListenPort)
 	}
 	payload, _ := bencode.Encode(dict)
 	return FormatExtended(ExtHandshakeID, payload)
@@ -108,6 +135,9 @@ func ParseExtHandshake(payload []byte) (*ExtHandshake, error) {
 		hs.MetadataSize = int(size)
 	}
 	hs.ClientName, _ = dict["v"].(string)
+	if p, ok := dict["p"].(int64); ok && p > 0 && p <= 65535 {
+		hs.ListenPort = uint16(p)
+	}
 	return hs, nil
 }
 

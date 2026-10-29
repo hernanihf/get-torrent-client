@@ -75,7 +75,7 @@ func (s *Server) sessionValues() map[string]any {
 		"peer-limit-per-torrent":               engine.MaxPeersPerTorrent,
 		"peer-port":                            e.Port,
 		"peer-port-random-on-start":            false,
-		"pex-enabled":                          false,
+		"pex-enabled":                          settings.PEXEnabled,
 		"port-forwarding-enabled":              false,
 		"queue-stalled-enabled":                false,
 		"queue-stalled-minutes":                30,
@@ -121,6 +121,7 @@ var settableSessionKeys = map[string]bool{
 	"alt-speed-down": true, "alt-speed-up": true, "alt-speed-enabled": true,
 	"seedRatioLimit": true, "seedRatioLimited": true,
 	"idle-seeding-limit": true, "idle-seeding-limit-enabled": true,
+	"pex-enabled": true,
 }
 
 // readOnlySessionKeys are session-get keys that clients cannot set; Transmission ignores them.
@@ -219,6 +220,9 @@ func (s *Server) sessionSet(args map[string]any) (map[string]any, error) {
 		}
 		if v, ok := args["idle-seeding-limit-enabled"].(bool); ok {
 			st.IdleSeedingLimitEnabled = v
+		}
+		if v, ok := args["pex-enabled"].(bool); ok {
+			st.PEXEnabled = v
 		}
 	})
 	_ = s.engine.SaveState()

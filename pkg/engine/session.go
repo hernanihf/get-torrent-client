@@ -18,15 +18,16 @@ const (
 	// KeepAliveInterval is how often we send a keep-alive to a peer we have not written to.
 	KeepAliveInterval = 90 * time.Second
 
-	// peerTickInterval drives periodic per-peer work (metadata re-requests, keep-alives).
-	peerTickInterval = 10 * time.Second
-
 	// maxInflightBlocks caps pipelined block requests outstanding to one peer.
 	maxInflightBlocks = 8
 
 	// maxMetadataRequests caps ut_metadata piece requests issued to one peer at a time.
 	maxMetadataRequests = 8
 )
+
+// peerTickInterval drives periodic per-peer work (metadata re-requests, keep-alives, PEX).
+// A variable so tests can speed it up.
+var peerTickInterval = 10 * time.Second
 
 // peerSession holds the per-connection state of the message loop. Only the goroutine running
 // handlePeerMessages touches it (and the Conn's state fields), so no locking is needed; the
@@ -42,6 +43,7 @@ type peerSession struct {
 	inflight int
 	extDone  bool         // peer's extension handshake has been processed
 	uploads  *uploadQueue // shared with the uploader goroutine
+	pex      pexState
 	lastSent time.Time
 	now      func() time.Time
 }
@@ -110,7 +112,11 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	}()
 
 	if conn.SupportsExtensions {
-		s.send(peer.FormatExtHandshake(t.metadataSize()))
+		s.send(peer.FormatExtHandshakeWith(peer.ExtHandshakeOptions{
+			MetadataSize: t.metadataSize(),
+			ListenPort:   e.Port,
+			PEX:          e.pexAllowed(t),
+		}))
 	}
 	if server := e.dhtServer(); server != nil && conn.SupportsDHT {
 		s.send(peer.FormatPort(uint16(server.Addr().Port)))
@@ -199,6 +205,7 @@ func (s *peerSession) tick() {
 	s.attach()
 	s.requestBlocks()   // also picks up files selected since the last peer event
 	s.requestMetadata() // re-issues timed-out metadata requests
+	s.sendPex()
 	if s.now().Sub(s.lastSent) >= KeepAliveInterval {
 		s.send(&peer.Message{})
 	}
@@ -275,6 +282,8 @@ func (s *peerSession) handle(msg *peer.Message) {
 			s.onExtHandshake()
 		case peer.LocalUTMetadataID:
 			s.handleMetadataMsg(payload)
+		case peer.LocalUTPexID:
+			s.handlePex(payload)
 		}
 	}
 }
