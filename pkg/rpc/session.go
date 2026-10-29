@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,24 @@ import (
 
 // sessionGet implements "session-get", honouring the optional "fields" filter (rpc-version 16).
 func (s *Server) sessionGet(args map[string]any) (map[string]any, error) {
+	all := s.sessionValues()
+	raw, ok := args["fields"].([]any)
+	if !ok {
+		return all, nil
+	}
+	out := make(map[string]any, len(raw))
+	for _, f := range raw {
+		if name, ok := f.(string); ok {
+			if v, exists := all[name]; exists {
+				out[name] = v
+			}
+		}
+	}
+	return out, nil
+}
+
+// sessionValues returns every session-get key with its effective value.
+func (s *Server) sessionValues() map[string]any {
 	e := s.engine
 	settings := e.Settings()
 	downloadDir := settings.DownloadDir
@@ -46,7 +65,7 @@ func (s *Server) sessionGet(args map[string]any) (map[string]any, error) {
 		"download-dir-free-space":              freeBytes,
 		"download-queue-enabled":               false,
 		"download-queue-size":                  5,
-		"encryption":                           "tolerated", // plaintext only; encryption is not implemented
+		"encryption":                           "tolerated", // closest value: we only speak plaintext, and session-set rejects the others
 		"idle-seeding-limit":                   30,
 		"idle-seeding-limit-enabled":           false,
 		"incomplete-dir":                       downloadDir,
@@ -92,25 +111,76 @@ func (s *Server) sessionGet(args map[string]any) (map[string]any, error) {
 		"utp-enabled": false,
 		"version":     "4.0.6 (get-torrent)",
 	}
-
-	raw, ok := args["fields"].([]any)
-	if !ok {
-		return all, nil
-	}
-	out := make(map[string]any, len(raw))
-	for _, f := range raw {
-		if name, ok := f.(string); ok {
-			if v, exists := all[name]; exists {
-				out[name] = v
-			}
-		}
-	}
-	return out, nil
+	return all
 }
 
-// sessionSet implements "session-set". Settings get-torrent does not support are ignored,
-// as Transmission ignores unknown keys; session-get keeps reporting the effective values.
+// settableSessionKeys are the session-set keys get-torrent applies.
+var settableSessionKeys = map[string]bool{
+	"download-dir": true, "speed-limit-down": true, "speed-limit-up": true,
+	"speed-limit-down-enabled": true, "speed-limit-up-enabled": true,
+	"alt-speed-down": true, "alt-speed-up": true, "alt-speed-enabled": true,
+}
+
+// readOnlySessionKeys are session-get keys that clients cannot set; Transmission ignores them.
+var readOnlySessionKeys = map[string]bool{
+	"blocklist-size": true, "config-dir": true, "download-dir-free-space": true, "rpc-version": true,
+	"rpc-version-minimum": true, "rpc-version-semver": true, "session-id": true, "units": true,
+	"version": true,
+}
+
+// unsupportedSessionKeys lists, sorted, the session-set arguments that would change a setting
+// get-torrent does not implement. Such a key is accepted when it repeats the value session-get
+// reports, so clients that send their whole preferences dialog keep working.
+func (s *Server) unsupportedSessionKeys(args map[string]any) []string {
+	current := s.sessionValues()
+	var bad []string
+	for k, v := range args {
+		reported, known := current[k]
+		if !known || settableSessionKeys[k] || readOnlySessionKeys[k] {
+			continue // unknown keys are ignored, as in Transmission
+		}
+		if !sameValue(v, reported) {
+			bad = append(bad, k)
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// sameValue compares a decoded JSON argument with a reported value, treating all numbers alike.
+func sameValue(arg, reported any) bool {
+	a, argNum := toFloat(arg)
+	b, repNum := toFloat(reported)
+	if argNum || repNum {
+		return argNum && repNum && a == b
+	}
+	switch reported.(type) {
+	case bool, string:
+		return arg == reported
+	}
+	return fmt.Sprint(arg) == fmt.Sprint(reported)
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+// sessionSet implements "session-set". Nothing is applied if any argument asks for a setting
+// get-torrent does not support (see unsupportedSessionKeys); unknown keys are ignored.
 func (s *Server) sessionSet(args map[string]any) (map[string]any, error) {
+	if bad := s.unsupportedSessionKeys(args); len(bad) > 0 {
+		return nil, fmt.Errorf("unsupported session settings: %s", strings.Join(bad, ", "))
+	}
 	s.engine.UpdateSettings(func(st *engine.Settings) {
 		if newDir, ok := args["download-dir"].(string); ok && newDir != "" {
 			st.DownloadDir = newDir
