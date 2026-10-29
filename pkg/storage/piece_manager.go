@@ -20,8 +20,19 @@ type PieceManager struct {
 	DownloadedBytes int64
 	TotalBytes      int64
 	activeRequests  map[string][]string // blockKey -> []peerAddr
-	mu              sync.RWMutex
+	// wanted and priority select what to download (per-file selection mapped onto pieces).
+	// Every piece is wanted at normal priority until SetPiecePriorities says otherwise.
+	wanted   []bool
+	priority []int8
+	mu       sync.RWMutex
 }
+
+// Download priorities, as in Transmission's TR_PRI_* values.
+const (
+	PriorityLow    int8 = -1
+	PriorityNormal int8 = 0
+	PriorityHigh   int8 = 1
+)
 
 // NewPieceManager initializes piece tracking and peer availability for a torrent.
 func NewPieceManager(meta *metainfo.TorrentMeta, store *Storage) *PieceManager {
@@ -54,7 +65,66 @@ func NewPieceManager(meta *metainfo.TorrentMeta, store *Storage) *PieceManager {
 		DownloadedBytes: 0,
 		TotalBytes:      meta.TotalLength,
 		activeRequests:  make(map[string][]string),
+		wanted:          allTrue(numPieces),
+		priority:        make([]int8, numPieces),
 	}
+}
+
+func allTrue(n int) []bool {
+	b := make([]bool, n)
+	for i := range b {
+		b[i] = true
+	}
+	return b
+}
+
+// SetPiecePriorities replaces which pieces are wanted and their priorities. Both slices must
+// have one entry per piece.
+func (pm *PieceManager) SetPiecePriorities(wanted []bool, priority []int8) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.wanted = append([]bool(nil), wanted...)
+	pm.priority = append([]int8(nil), priority...)
+}
+
+// isWanted reports whether piece i is to be downloaded. Caller holds pm.mu.
+func (pm *PieceManager) isWanted(i int) bool {
+	return pm.wanted == nil || pm.wanted[i]
+}
+
+// IsDone reports whether every wanted piece is verified on disk: the download is finished,
+// even if unwanted files are incomplete (Transmission's "partial seed").
+func (pm *PieceManager) IsDone() bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for i := range pm.Pieces {
+		if pm.isWanted(i) && !pm.Bitfield.HasPiece(i) {
+			return false
+		}
+	}
+	return true
+}
+
+// WantedProgress returns the verified and total bytes of the wanted pieces.
+func (pm *PieceManager) WantedProgress() (have, total int64) {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for i, p := range pm.Pieces {
+		if !pm.isWanted(i) {
+			continue
+		}
+		total += int64(p.Length)
+		if pm.Bitfield.HasPiece(i) {
+			have += int64(p.Length)
+		}
+	}
+	return have, total
+}
+
+// Left returns the bytes still to download: wanted pieces not yet verified.
+func (pm *PieceManager) Left() int64 {
+	have, total := pm.WantedProgress()
+	return total - have
 }
 
 // OnPeerBitfield updates piece availability when a peer sends its initial bitfield.
@@ -92,37 +162,51 @@ func (pm *PieceManager) OnPeerDisconnect(bf peer.Bitfield) {
 }
 
 // IsEndgame returns true when very few pieces remain, triggering redundant requests to finish fast.
+// Only wanted pieces count. Caller holds pm.mu.
 func (pm *PieceManager) IsEndgame() bool {
-	remaining := len(pm.Pieces) - pm.CompletedPieces
+	wanted, remaining := 0, 0
+	for i := range pm.Pieces {
+		if pm.isWanted(i) {
+			wanted++
+			if !pm.Bitfield.HasPiece(i) {
+				remaining++
+			}
+		}
+	}
 	if remaining <= 20 {
 		return true
 	}
-	progress := float64(pm.CompletedPieces) / float64(len(pm.Pieces))
-	return progress >= 0.98
+	return float64(wanted-remaining)/float64(wanted) >= 0.98
 }
 
-// RarestPieceOrder returns piece indices sorted by availability (rarest first).
+// RarestPieceOrder returns the wanted, missing piece indices the peer has, highest priority
+// first and, within a priority, rarest first. Caller holds pm.mu.
 func (pm *PieceManager) RarestPieceOrder(peerBf peer.Bitfield) []int {
 	type pieceAvail struct {
 		index int
 		avail int
+		prio  int8
 	}
 
 	var candidates []pieceAvail
 	for i := 0; i < len(pm.Pieces); i++ {
-		if pm.Bitfield.HasPiece(i) {
-			continue // Already completed
+		if pm.Bitfield.HasPiece(i) || !pm.isWanted(i) {
+			continue // Already completed, or not selected for download
 		}
 		if len(peerBf) > 0 && !peerBf.HasPiece(i) {
 			continue // Peer does not have this piece
 		}
-		candidates = append(candidates, pieceAvail{
-			index: i,
-			avail: pm.Availability[i],
-		})
+		c := pieceAvail{index: i, avail: pm.Availability[i]}
+		if pm.priority != nil {
+			c.prio = pm.priority[i]
+		}
+		candidates = append(candidates, c)
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].prio != candidates[j].prio {
+			return candidates[i].prio > candidates[j].prio
+		}
 		return candidates[i].avail < candidates[j].avail
 	})
 
@@ -251,6 +335,7 @@ func (pm *PieceManager) Progress() (percent float64, downloaded int64) {
 type Snapshot struct {
 	Have         peer.Bitfield // pieces verified and on disk
 	Availability []int         // per-piece count of connected peers having it
+	Wanted       []bool        // per-piece: selected for download
 }
 
 // Snapshot returns a copy of the bitfield and availability, safe to use without locks.
@@ -260,6 +345,7 @@ func (pm *PieceManager) Snapshot() Snapshot {
 	return Snapshot{
 		Have:         append(peer.Bitfield(nil), pm.Bitfield...),
 		Availability: append([]int(nil), pm.Availability...),
+		Wanted:       append([]bool(nil), pm.wanted...),
 	}
 }
 

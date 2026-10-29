@@ -267,9 +267,8 @@ func (e *Engine) announceParams(t *ManagedTorrent) tracker.AnnounceParams {
 		// Size unknown until metadata arrives; a non-zero value marks us as a leecher.
 		p.Left = 1
 	} else {
-		// Verified data is authoritative, as in Status.
-		_, have := t.PieceManager.Progress()
-		p.Left = t.Meta.TotalLength - have
+		// Verified data is authoritative, as in Status; unwanted files do not count.
+		p.Left = t.PieceManager.Left()
 	}
 	return p
 }

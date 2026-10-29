@@ -80,6 +80,7 @@ type ManagedTorrent struct {
 	recheck        float64       // torrent-verify progress, 0..1
 	restartAfter   bool          // restart once verification finishes
 
+	files       FileSelection // per-file wanted/priority; zero value means the default (all, normal)
 	limits      TorrentLimits
 	downLimiter *bandwidth.Limiter // per-torrent limiters; nil means unlimited
 	upLimiter   *bandwidth.Limiter
@@ -127,7 +128,9 @@ type TorrentStatus struct {
 	InfoHash                [20]byte
 	State                   TorrentState
 	TotalSize               int64
-	PercentDone             float64 // 0..1
+	PercentDone             float64 // 0..1, of the wanted pieces
+	PercentComplete         float64 // 0..1, of all data, wanted or not
+	SizeWhenDone            int64   // bytes of the wanted pieces
 	MetadataPercentComplete float64 // 0..1
 	RecheckProgress         float64 // 0..1
 	Left                    int64
@@ -224,10 +227,18 @@ func (t *ManagedTorrent) Status() TorrentStatus {
 	}
 	switch {
 	case pm != nil:
-		pct, have := pm.Progress()
-		st.PercentDone = pct / 100.0
+		_, have := pm.Progress()
+		wantedHave, wantedTotal := pm.WantedProgress()
 		st.HaveValid = have
-		st.Left = st.TotalSize - have
+		st.SizeWhenDone = wantedTotal
+		st.Left = wantedTotal - wantedHave
+		st.PercentDone, st.PercentComplete = 1, 1
+		if wantedTotal > 0 {
+			st.PercentDone = float64(wantedHave) / float64(wantedTotal)
+		}
+		if st.TotalSize > 0 {
+			st.PercentComplete = float64(have) / float64(st.TotalSize)
+		}
 		st.MetadataPercentComplete = 1
 	case asm != nil:
 		st.MetadataPercentComplete = asm.Progress()
@@ -432,7 +443,7 @@ func (e *Engine) StartTorrent(id int) error {
 		return nil
 	}
 
-	if t.PieceManager != nil && t.PieceManager.IsComplete() {
+	if t.PieceManager != nil && t.PieceManager.IsDone() {
 		t.setStateLocked(StateSeeding)
 	} else {
 		t.setStateLocked(StateDownloading)

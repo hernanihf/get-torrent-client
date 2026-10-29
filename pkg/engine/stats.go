@@ -320,6 +320,8 @@ type FileStatus struct {
 	Name           string // path relative to the download dir, "/"-separated
 	Length         int64
 	BytesCompleted int64
+	Wanted         bool
+	Priority       int8
 }
 
 // Files returns per-file progress computed from verified pieces.
@@ -327,6 +329,10 @@ func (t *ManagedTorrent) Files() []FileStatus {
 	meta, pm, _ := t.components()
 	if len(meta.Files) == 0 {
 		return []FileStatus{}
+	}
+	sel := t.FileSelection()
+	if !sel.valid(len(meta.Files)) {
+		sel = defaultSelection(len(meta.Files))
 	}
 	var have peer.Bitfield
 	if pm != nil {
@@ -336,12 +342,12 @@ func (t *ManagedTorrent) Files() []FileStatus {
 	multi := len(meta.Files) > 1 || len(meta.Files[0].Path) > 1
 	out := make([]FileStatus, 0, len(meta.Files))
 	var offset int64
-	for _, f := range meta.Files {
+	for i, f := range meta.Files {
 		name := meta.Name
 		if multi {
 			name = meta.Name + "/" + strings.Join(f.Path, "/")
 		}
-		fs := FileStatus{Name: name, Length: f.Length}
+		fs := FileStatus{Name: name, Length: f.Length, Wanted: sel.Wanted[i], Priority: sel.Priority[i]}
 		if f.Length > 0 && have != nil {
 			first := offset / meta.PieceLength
 			last := (offset + f.Length - 1) / meta.PieceLength

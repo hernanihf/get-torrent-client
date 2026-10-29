@@ -196,9 +196,8 @@ func (s *peerSession) onExtHandshake() {
 }
 
 func (s *peerSession) tick() {
-	if s.attach() {
-		s.requestBlocks()
-	}
+	s.attach()
+	s.requestBlocks()   // also picks up files selected since the last peer event
 	s.requestMetadata() // re-issues timed-out metadata requests
 	if s.now().Sub(s.lastSent) >= KeepAliveInterval {
 		s.send(&peer.Message{})
@@ -207,7 +206,7 @@ func (s *peerSession) tick() {
 
 // requestBlocks pipelines block requests to the peer using rarest-first scheduling.
 func (s *peerSession) requestBlocks() {
-	if s.pm == nil || s.conn.Choked || s.pm.IsComplete() {
+	if s.pm == nil || s.conn.Choked || s.pm.IsDone() {
 		return
 	}
 	for s.inflight < maxInflightBlocks {
@@ -311,7 +310,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 		meta, _, _ := s.t.components()
 		pct, dl := s.pm.Progress()
 		s.t.mu.Lock()
-		s.t.Left = meta.TotalLength - dl
+		s.t.Left = s.pm.Left()
 		s.t.mu.Unlock()
 
 		log.Printf("[Engine] Piece %d verified (SHA-1 OK). Progress: %.1f%% (%d/%d bytes)",
@@ -320,7 +319,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 		// Broadcast MsgHave to all active peers
 		s.e.broadcastHave(s.t, index)
 
-		if s.pm.IsComplete() {
+		if s.pm.IsDone() {
 			s.t.mu.Lock()
 			if s.t.State == StateDownloading {
 				s.t.setStateLocked(StateSeeding)

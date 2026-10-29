@@ -28,6 +28,9 @@ type TorrentStateEntry struct {
 	AddedDate   int64          `json:"added_date,omitempty"`
 	DoneDate    int64          `json:"done_date,omitempty"`
 	Limits      *TorrentLimits `json:"limits,omitempty"`
+	// Per-file selection; absent means every file wanted at normal priority.
+	FilesWanted  []bool `json:"files_wanted,omitempty"`
+	FilePriority []int8 `json:"file_priority,omitempty"`
 
 	// Pieces is the verified-piece bitfield and Files the stamps of the data files it describes.
 	// On load the bitfield is trusted only if every file still matches its stamp; otherwise the
@@ -110,6 +113,9 @@ func (e *Engine) SaveState() error {
 			AddedDate:   unix(t.AddedDate),
 			DoneDate:    unix(t.DoneDate),
 			Limits:      &limits,
+		}
+		if t.files.valid(len(t.Meta.Files)) {
+			entry.FilesWanted, entry.FilePriority = t.files.Wanted, t.files.Priority
 		}
 		if pm != nil && t.State != StateChecking {
 			// Stamp the files after snapshotting the bitfield: a piece is set only once it is
@@ -248,6 +254,11 @@ func (e *Engine) LoadState() error {
 			t.limits = *entry.Limits
 			t.applyLimits(t.limits)
 		}
+		if sel := (FileSelection{Wanted: entry.FilesWanted, Priority: entry.FilePriority}); t.PieceManager != nil && sel.valid(len(t.Meta.Files)) {
+			t.files = sel
+			t.PieceManager.SetPiecePriorities(piecePriorities(t.Meta, sel))
+			t.Left = t.PieceManager.Left()
+		}
 		run := entry.State == StateDownloading || entry.State == StateSeeding
 		if pm, store := t.PieceManager, t.Storage; pm != nil {
 			if !resumeValid(entry, len(t.Meta.Pieces), store) {
@@ -258,8 +269,7 @@ func (e *Engine) LoadState() error {
 				continue
 			}
 			pm.SetVerified(entry.Pieces)
-			_, done := pm.Progress()
-			t.Left = t.Meta.TotalLength - done
+			t.Left = pm.Left()
 		}
 		switch {
 		case run:

@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/hernan/get-torrent/pkg/engine"
+	"github.com/hernan/get-torrent/pkg/storage"
 )
 
 const (
@@ -282,12 +283,21 @@ func (s *Server) torrentRemove(args map[string]any) (map[string]any, error) {
 	return nil, nil
 }
 
-// torrentSet applies per-torrent bandwidth limits. Like Transmission, keys it does not support
-// are ignored, but ids must still be valid.
+// torrentSet applies per-torrent bandwidth limits and file selection. Like Transmission, keys it
+// does not support are ignored, but ids must still be valid.
 func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
 	sel, err := s.selectTorrents(args)
 	if err != nil {
 		return nil, err
+	}
+	if hasFileArgs(args) {
+		for _, t := range sel.torrents {
+			if err := s.engine.SetFileSelection(t.ID, func(fs *engine.FileSelection) error {
+				return applyFileArgs(args, fs)
+			}); err != nil {
+				return nil, err
+			}
+		}
 	}
 	for _, t := range sel.torrents {
 		err := s.engine.SetTorrentLimits(t.ID, func(l *engine.TorrentLimits) {
@@ -377,4 +387,66 @@ func (s *Server) selectTorrents(args map[string]any) (selection, error) {
 func (s *Server) ListenAndServe() error {
 	log.Printf("[RPC] Transmission RPC server listening on http://%s/transmission/rpc", s.addr)
 	return http.ListenAndServe(s.addr, s.Handler())
+}
+
+// fileArgs maps the torrent-add/torrent-set file arguments to what they set.
+var fileArgs = []struct {
+	key      string
+	wanted   *bool
+	priority *int8
+}{
+	{key: "files-wanted", wanted: ptr(true)},
+	{key: "files-unwanted", wanted: ptr(false)},
+	{key: "priority-high", priority: ptr(storage.PriorityHigh)},
+	{key: "priority-normal", priority: ptr(storage.PriorityNormal)},
+	{key: "priority-low", priority: ptr(storage.PriorityLow)},
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func hasFileArgs(args map[string]any) bool {
+	for _, fa := range fileArgs {
+		if _, ok := args[fa.key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// applyFileArgs applies files-wanted, files-unwanted and priority-* to a selection. Each holds
+// file indices; an empty list means every file, as in the Transmission spec.
+func applyFileArgs(args map[string]any, sel *engine.FileSelection) error {
+	n := len(sel.Wanted)
+	for _, fa := range fileArgs {
+		raw, ok := args[fa.key]
+		if !ok {
+			continue
+		}
+		list, ok := raw.([]any)
+		if !ok {
+			return fmt.Errorf("%s must be a list of file indices", fa.key)
+		}
+		indices := make([]int, 0, len(list))
+		for _, v := range list {
+			f, ok := v.(float64)
+			if !ok || f != float64(int(f)) || f < 0 || int(f) >= n {
+				return fmt.Errorf("%s: invalid file index %v", fa.key, v)
+			}
+			indices = append(indices, int(f))
+		}
+		if len(list) == 0 {
+			for i := range n {
+				indices = append(indices, i)
+			}
+		}
+		for _, i := range indices {
+			if fa.wanted != nil {
+				sel.Wanted[i] = *fa.wanted
+			}
+			if fa.priority != nil {
+				sel.Priority[i] = *fa.priority
+			}
+		}
+	}
+	return nil
 }

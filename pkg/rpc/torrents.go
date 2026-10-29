@@ -109,7 +109,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 		snap := c.snapshot()
 		var n int64
 		for i, avail := range snap.Availability {
-			if avail > 0 && !snap.Have.HasPiece(i) {
+			if avail > 0 && !snap.Have.HasPiece(i) && (snap.Wanted == nil || snap.Wanted[i]) {
 				n += c.pieceLength(i)
 			}
 		}
@@ -147,7 +147,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"fileStats": func(c *fieldCtx) any {
 		out := make([]map[string]any, 0, len(c.fileList()))
 		for _, f := range c.fileList() {
-			out = append(out, map[string]any{"bytesCompleted": f.BytesCompleted, "wanted": true, "priority": 0})
+			out = append(out, map[string]any{"bytesCompleted": f.BytesCompleted, "wanted": f.Wanted, "priority": f.Priority})
 		}
 		return out
 	},
@@ -216,14 +216,20 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	},
 	"peersGettingFromUs": func(c *fieldCtx) any { return c.st.PeersGettingFromUs },
 	"peersSendingToUs":   func(c *fieldCtx) any { return c.st.PeersSendingToUs },
-	"percentComplete":    func(c *fieldCtx) any { return c.st.PercentDone },
-	"percentDone":        func(c *fieldCtx) any { return c.st.PercentDone }, // every file is wanted
+	"percentComplete":    func(c *fieldCtx) any { return c.st.PercentComplete },
+	"percentDone":        func(c *fieldCtx) any { return c.st.PercentDone }, // of the wanted files
 	"pieces": func(c *fieldCtx) any {
 		return base64.StdEncoding.EncodeToString(c.snapshot().Have)
 	},
 	"pieceCount": func(c *fieldCtx) any { return c.st.PieceCount },
 	"pieceSize":  func(c *fieldCtx) any { return c.st.PieceSize },
-	"priorities": func(c *fieldCtx) any { return make([]int, len(c.fileList())) },
+	"priorities": func(c *fieldCtx) any {
+		out := make([]int, 0, len(c.fileList()))
+		for _, f := range c.fileList() {
+			out = append(out, int(f.Priority))
+		}
+		return out
+	},
 	"primary-mime-type": func(c *fieldCtx) any {
 		var largest engine.FileStatus
 		for _, f := range c.fileList() {
@@ -246,7 +252,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"seedIdleMode":       func(c *fieldCtx) any { return 0 }, // follow session settings
 	"seedRatioLimit":     func(c *fieldCtx) any { return 2.0 },
 	"seedRatioMode":      func(c *fieldCtx) any { return 0 },
-	"sizeWhenDone":       func(c *fieldCtx) any { return c.st.TotalSize },
+	"sizeWhenDone":       func(c *fieldCtx) any { return c.st.SizeWhenDone },
 	"startDate":          func(c *fieldCtx) any { return c.st.StartDate },
 	"status":             func(c *fieldCtx) any { return statusCode(c.st.State) },
 	"trackers": func(c *fieldCtx) any {
@@ -321,9 +327,13 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	},
 	"wanted": func(c *fieldCtx) any {
 		// 0/1 integers rather than booleans: Transmission 4.0.2 restored this for compatibility.
-		out := make([]int, len(c.fileList()))
-		for i := range out {
-			out[i] = 1
+		out := make([]int, 0, len(c.fileList()))
+		for _, f := range c.fileList() {
+			if f.Wanted {
+				out = append(out, 1)
+			} else {
+				out = append(out, 0)
+			}
 		}
 		return out
 	},
@@ -490,6 +500,15 @@ func (s *Server) torrentAdd(args map[string]any) (map[string]any, error) {
 		return map[string]any{"torrent-duplicate": info}, nil
 	}
 
+	if hasFileArgs(args) && st.MetadataPercentComplete == 1 {
+		// Magnets learn their file list later; Transmission ignores these for them too.
+		if err := s.engine.SetFileSelection(t.ID, func(fs *engine.FileSelection) error {
+			return applyFileArgs(args, fs)
+		}); err != nil {
+			_ = s.engine.RemoveTorrent(t.ID, false)
+			return nil, err
+		}
+	}
 	if paused, _ := args["paused"].(bool); !paused {
 		_ = s.engine.StartTorrent(t.ID)
 	}

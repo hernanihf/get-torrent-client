@@ -229,10 +229,9 @@ func (e *Engine) startVerify(t *ManagedTorrent, restart bool) {
 			t.mu.Unlock()
 		}
 		pm.SetVerified(have)
-		_, done := pm.Progress()
 
 		t.mu.Lock()
-		t.Left = meta.TotalLength - done
+		t.Left = pm.Left()
 		t.recheck = 0
 		restart := t.restartAfter
 		t.restartAfter = false
