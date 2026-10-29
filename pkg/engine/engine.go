@@ -310,6 +310,9 @@ type Engine struct {
 	saveMu sync.Mutex     // serializes SaveState (periodic and shutdown saves share the files)
 	bg     sync.WaitGroup // background loops that Close waits for before stopping torrents
 
+	peerTick time.Duration // per-peer housekeeping period (peerTickInterval)
+	pexEvery time.Duration // minimum time between ut_pex messages to a peer (pexInterval)
+
 	announceKey uint32         // tracker "key": identifies this client across IP changes
 	stopping    sync.WaitGroup // "stopped" announces that Close waits for
 }
@@ -332,6 +335,8 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
 		announceKey:      binary.BigEndian.Uint32(key[:]),
+		peerTick:         peerTickInterval,
+		pexEvery:         pexInterval,
 		AltSpeedDown:     50,
 		AltSpeedUp:       50,
 		SeedRatioLimit:   2,
@@ -643,6 +648,7 @@ func (e *Engine) connectPeer(t *ManagedTorrent, p tracker.Peer, source PeerSourc
 	defer e.unregisterConn(t, conn)
 
 	log.Printf("[Engine] Connected to peer %s (PeerID: %x)", p.String(), conn.PeerID[:8])
+	sendHaveState(t, conn)
 
 	// Express interest in downloading (or in metadata, for magnets)
 	_ = conn.SendInterested()

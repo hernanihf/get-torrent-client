@@ -29,6 +29,7 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 	var reserved [8]byte
 	reserved[5] |= 0x10 // BEP 0010 Extension Protocol support
 	reserved[7] |= 0x01 // BEP 0005 DHT support
+	reserved[7] |= 0x04 // BEP 0006 Fast Extension
 	return &Handshake{
 		Pstr:     protocolIdentifier,
 		Reserved: reserved,
@@ -40,6 +41,11 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 // SupportsExtension returns true if the peer indicates support for BEP 0010 extension protocol.
 func (h *Handshake) SupportsExtension() bool {
 	return (h.Reserved[5] & 0x10) != 0
+}
+
+// SupportsFast reports whether the BEP 0006 Fast Extension bit is set.
+func (h *Handshake) SupportsFast() bool {
+	return (h.Reserved[7] & 0x04) != 0
 }
 
 // SupportsDHT returns true if the peer indicates BEP 0005 DHT support (and may send MsgPort).

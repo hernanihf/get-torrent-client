@@ -26,7 +26,8 @@ const (
 )
 
 // peerTickInterval drives periodic per-peer work (metadata re-requests, keep-alives, PEX).
-// A variable so tests can speed it up.
+// Each engine copies it when created (Engine.peerTick), so tests can speed up their own engines
+// without racing with sessions of other engines.
 var peerTickInterval = 10 * time.Second
 
 // peerSession holds the per-connection state of the message loop. Only the goroutine running
@@ -40,9 +41,9 @@ type peerSession struct {
 	ctx      context.Context // cancelled when the session ends or the torrent stops
 	addr     string
 	pm       *storage.PieceManager // set once this peer's pieces are counted in availability
-	inflight int
-	extDone  bool         // peer's extension handshake has been processed
-	uploads  *uploadQueue // shared with the uploader goroutine
+	pending  map[blockKey]struct{} // blocks requested from this peer and not yet answered
+	extDone  bool                  // peer's extension handshake has been processed
+	uploads  *uploadQueue          // shared with the uploader goroutine
 	pex      pexState
 	lastSent time.Time
 	now      func() time.Time
@@ -60,6 +61,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 		now:      time.Now,
 		info:     t.peerInfoFor(conn),
 		uploads:  newUploadQueue(),
+		pending:  make(map[blockKey]struct{}),
 	}
 	defer s.detach()
 
@@ -125,7 +127,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	s.onExtHandshake() // the handshake may have arrived during Dial
 	s.requestBlocks()
 
-	ticker := time.NewTicker(peerTickInterval)
+	ticker := time.NewTicker(e.peerTick)
 	defer ticker.Stop()
 
 	var chokeReq <-chan bool // nil (never ready) for unregistered connections
@@ -182,6 +184,9 @@ func (s *peerSession) attach() bool {
 	if pm == nil {
 		return false
 	}
+	if s.conn.PeerHasAll {
+		s.conn.Bitfield = fullBitfield(len(pm.Pieces))
+	}
 	pm.OnPeerBitfield(s.conn.Bitfield)
 	s.pm = pm
 	return true
@@ -189,7 +194,37 @@ func (s *peerSession) attach() bool {
 
 func (s *peerSession) detach() {
 	if s.pm != nil {
+		s.releasePending()
 		s.pm.OnPeerDisconnect(s.conn.Bitfield)
+	}
+}
+
+// fullBitfield returns a bitfield with all n pieces set (a Have All peer).
+func fullBitfield(n int) peer.Bitfield {
+	bf := make(peer.Bitfield, (n+7)/8)
+	for i := 0; i < n; i++ {
+		bf.SetPiece(i)
+	}
+	return bf
+}
+
+// blockKey identifies a requested block.
+type blockKey struct{ index, begin int }
+
+// releasePending gives back every outstanding request, so other peers can be asked.
+func (s *peerSession) releasePending() {
+	for k := range s.pending {
+		s.pm.ReleaseRequest(k.index, k.begin, s.addr)
+	}
+	clear(s.pending)
+}
+
+// prunePending forgets requests whose block arrived from another peer (endgame).
+func (s *peerSession) prunePending() {
+	for k := range s.pending {
+		if s.pm.BlockReceived(k.index, k.begin) {
+			delete(s.pending, k)
+		}
 	}
 }
 
@@ -216,14 +251,19 @@ func (s *peerSession) requestBlocks() {
 	if s.pm == nil || s.conn.Choked || s.pm.IsDone() {
 		return
 	}
-	for s.inflight < maxInflightBlocks {
+	s.prunePending()
+	for len(s.pending) < maxInflightBlocks {
 		req, ok := s.pm.NextRequest(s.conn.Bitfield)
 		if !ok {
 			break
 		}
+		key := blockKey{req.PieceIndex, req.Begin}
+		if _, dup := s.pending[key]; dup {
+			break // endgame offers a block already requested from this peer
+		}
 		s.pm.RegisterRequest(req.PieceIndex, req.Begin, s.addr)
 		s.send(peer.FormatRequest(req.PieceIndex, req.Begin, req.Length))
-		s.inflight++
+		s.pending[key] = struct{}{}
 	}
 }
 
@@ -241,8 +281,27 @@ func (s *peerSession) handle(msg *peer.Message) {
 		s.requestBlocks()
 
 	case peer.MsgChoke:
-		// A choking peer discards our pending requests.
-		s.inflight = 0
+		// Without the Fast Extension a choking peer silently discards our requests; with it,
+		// each one is answered by a piece or a reject.
+		if s.pm != nil && !s.conn.SupportsFast {
+			s.releasePending()
+		}
+
+	case peer.MsgRejectRequest:
+		if idx, begin, _, err := peer.ParseReject(msg); err == nil && s.pm != nil {
+			if _, ok := s.pending[blockKey{idx, begin}]; ok {
+				delete(s.pending, blockKey{idx, begin})
+				s.pm.ReleaseRequest(idx, begin, s.addr)
+			}
+		}
+		s.requestBlocks()
+
+	case peer.MsgHaveAll:
+		if s.pm != nil && !justAttached {
+			s.conn.Bitfield = fullBitfield(len(s.pm.Pieces))
+			s.pm.OnPeerBitfield(s.conn.Bitfield)
+		}
+		s.requestBlocks()
 
 	case peer.MsgHave:
 		if s.pm != nil && !justAttached {
@@ -295,9 +354,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 	index := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
 	begin := int(binary.BigEndian.Uint32(msg.Payload[4:8]))
 	data := msg.Payload[8:]
-	if s.inflight > 0 {
-		s.inflight--
-	}
+	delete(s.pending, blockKey{index, begin})
 	s.e.recordDownload(s.t, s.info, len(data))
 
 	// Endgame Mode optimization: cancel redundant requests sent to other peers
@@ -343,23 +400,57 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 }
 
 // handleRequest queues a block request from a peer we have unchoked; the uploader serves it.
+// Fast Extension peers get a reject for any request we will not serve.
 func (s *peerSession) handleRequest(msg *peer.Message) {
 	reqIdx, reqBegin, reqLen, err := peer.ParseRequest(msg)
-	if err != nil || s.conn.AmChoking {
-		return
-	}
 	// Requests larger than 128 KiB are a protocol violation and a memory-abuse vector.
-	if reqLen <= 0 || reqLen > 128*1024 || reqBegin < 0 || reqIdx < 0 {
+	if err != nil || reqLen <= 0 || reqLen > 128*1024 || reqBegin < 0 || reqIdx < 0 {
 		return
 	}
-	s.uploads.push(blockRequest{index: reqIdx, begin: reqBegin, length: reqLen})
+	r := blockRequest{index: reqIdx, begin: reqBegin, length: reqLen}
+	if s.conn.AmChoking || s.uploads.push(r) == pushFull {
+		s.reject(r)
+	}
 }
 
-// handleCancel withdraws a request the peer no longer needs (typically in its endgame).
+// handleCancel withdraws a request the peer no longer needs (typically in its endgame). With the
+// Fast Extension the withdrawn request is answered by a reject.
 func (s *peerSession) handleCancel(msg *peer.Message) {
 	if idx, begin, length, err := peer.ParseCancel(msg); err == nil {
-		s.uploads.cancel(blockRequest{index: idx, begin: begin, length: length})
+		r := blockRequest{index: idx, begin: begin, length: length}
+		if s.uploads.cancel(r) {
+			s.reject(r)
+		}
+	}
+}
+
+// reject tells a Fast Extension peer that a request will not be served; others get nothing.
+// Safe from the uploader goroutine: SupportsFast is fixed after the handshake.
+func (s *peerSession) reject(r blockRequest) {
+	if s.conn.SupportsFast {
+		_ = s.conn.SendMessage(peer.FormatReject(r.index, r.begin, r.length))
 	}
 }
 
 func idPtr(id peer.MessageID) *peer.MessageID { return &id }
+
+// sendHaveState tells a new peer which pieces we have; it must be the first message after the
+// handshake. Fast Extension peers get Have All or Have None when they fit, and must get one of
+// the three; others get a bitfield only if we have something.
+func sendHaveState(t *ManagedTorrent, conn *peer.Conn) {
+	_, pm, _ := t.components()
+	var have peer.Bitfield
+	complete := false
+	if pm != nil {
+		have = pm.Snapshot().Have
+		complete = len(pm.Pieces) > 0 && pm.IsComplete()
+	}
+	switch {
+	case conn.SupportsFast && complete:
+		_ = conn.SendMessage(peer.FormatHaveAll())
+	case conn.SupportsFast && !have.HasAnyPiece():
+		_ = conn.SendMessage(peer.FormatHaveNone())
+	case have.HasAnyPiece():
+		_ = conn.SendBitfield(have)
+	}
+}

@@ -31,48 +31,67 @@ func newUploadQueue() *uploadQueue {
 	return &uploadQueue{wake: make(chan struct{}, 1)}
 }
 
+// pushResult is the outcome of queueing a request.
+type pushResult int
+
+const (
+	pushQueued    pushResult = iota
+	pushDuplicate            // already queued or being served: ignored
+	pushFull                 // over maxUploadQueue: dropped
+)
+
 // push queues r, ignoring duplicates and requests beyond maxUploadQueue.
-func (q *uploadQueue) push(r blockRequest) {
+func (q *uploadQueue) push(r blockRequest) pushResult {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.reqs) >= maxUploadQueue || (q.current != nil && *q.current == r && !q.dropped) {
-		return
+	if q.current != nil && *q.current == r && !q.dropped {
+		return pushDuplicate
 	}
 	for _, x := range q.reqs {
 		if x == r {
-			return
+			return pushDuplicate
 		}
+	}
+	if len(q.reqs) >= maxUploadQueue {
+		return pushFull
 	}
 	q.reqs = append(q.reqs, r)
 	select {
 	case q.wake <- struct{}{}:
 	default:
 	}
+	return pushQueued
 }
 
-// cancel withdraws r, whether queued or being served.
-func (q *uploadQueue) cancel(r blockRequest) {
+// cancel withdraws r, whether queued or being served, reporting whether it was found (it will
+// then not be sent).
+func (q *uploadQueue) cancel(r blockRequest) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for i, x := range q.reqs {
 		if x == r {
 			q.reqs = append(q.reqs[:i], q.reqs[i+1:]...)
-			return
+			return true
 		}
 	}
-	if q.current != nil && *q.current == r {
+	if q.current != nil && *q.current == r && !q.dropped {
 		q.dropped = true
+		return true
 	}
+	return false
 }
 
-// clear drops every pending request: a choked peer discards them (BEP 0003).
-func (q *uploadQueue) clear() {
+// clear drops every pending request, as choking a peer does (BEP 0003), and returns them.
+func (q *uploadQueue) clear() []blockRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	dropped := q.reqs
 	q.reqs = nil
-	if q.current != nil {
+	if q.current != nil && !q.dropped {
 		q.dropped = true
+		dropped = append(dropped, *q.current)
 	}
+	return dropped
 }
 
 // next blocks until a request is available or ctx is done, marking it as being served.
@@ -120,7 +139,9 @@ func (s *peerSession) runUploader(ctx context.Context) {
 		}
 		block := s.readBlock(r)
 		if block == nil {
-			s.uploads.finish()
+			if s.uploads.finish() {
+				s.reject(r) // we cannot serve it (piece missing or out of range)
+			}
 			continue
 		}
 		if s.e.throttle(ctx, s.t, true, len(block)) != nil {

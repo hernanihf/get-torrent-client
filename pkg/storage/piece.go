@@ -163,3 +163,20 @@ func (p *Piece) Reset() {
 	defer p.mu.Unlock()
 	p.resetLocked()
 }
+
+// releaseBlock marks a requested but unreceived block as requestable again.
+func (p *Piece) releaseBlock(begin int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if i := begin / BlockSize; begin%BlockSize == 0 && i >= 0 && i < p.TotalBlocks && !p.ReceivedMap[i] {
+		p.RequestedMap[i] = false
+	}
+}
+
+// hasBlock reports whether the block at begin has been received.
+func (p *Piece) hasBlock(begin int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i := begin / BlockSize
+	return p.IsComplete || (i >= 0 && i < p.TotalBlocks && p.ReceivedMap[i])
+}

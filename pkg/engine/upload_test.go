@@ -119,3 +119,30 @@ func TestCancelledRequestsAreNotServed(t *testing.T) {
 		t.Errorf("cancelled blocks must not be sent: got %d pieces, want 2", n)
 	}
 }
+
+func TestUploadQueueResults(t *testing.T) {
+	q := newUploadQueue()
+	a, b := blockRequest{0, 0, 16384}, blockRequest{1, 0, 16384}
+	if q.push(a) != pushQueued || q.push(a) != pushDuplicate {
+		t.Fatal("expected queued, then duplicate")
+	}
+	if !q.cancel(a) || q.cancel(a) {
+		t.Error("cancel must report whether the request was pending")
+	}
+	q.push(a)
+	q.push(b)
+	q.next(context.Background()) // a is being served
+	dropped := q.clear()
+	if len(dropped) != 2 {
+		t.Errorf("clear must return the queued and the in-progress request, got %v", dropped)
+	}
+	if q.cancel(a) {
+		t.Error("a request dropped by clear must not be reported again")
+	}
+	for i := range maxUploadQueue {
+		q.push(blockRequest{i + 10, 0, 16384})
+	}
+	if q.push(blockRequest{9999, 0, 16384}) != pushFull {
+		t.Error("expected pushFull at capacity")
+	}
+}

@@ -131,10 +131,7 @@ func (e *Engine) handleInboundConn(netConn net.Conn) {
 
 	log.Printf("[Engine] Inbound peer connected: %s (PeerID: %x)", netConn.RemoteAddr().String(), conn.PeerID[:8])
 
-	// Send our bitfield if we have any pieces (must be the first message after the handshake)
-	if _, pm, _ := t.components(); pm != nil && pm.Bitfield.HasAnyPiece() {
-		_ = conn.SendBitfield(pm.Bitfield)
-	}
+	sendHaveState(t, conn)
 
 	// Express interest if downloading
 	if isDownloading {

@@ -33,6 +33,11 @@ type Conn struct {
 	SupportsExtensions bool
 	// SupportsDHT is true when the remote handshake set the BEP 0005 DHT reserved bit.
 	SupportsDHT bool
+	// SupportsFast is true when both sides set the BEP 0006 Fast Extension bit (we always do).
+	SupportsFast bool
+	// PeerHasAll is set by a Have All message; the bitfield cannot be sized until the piece
+	// count is known (magnets), so the session fills it in.
+	PeerHasAll bool
 	// PeerExt holds the remote extension handshake once received (nil until then).
 	PeerExt *ExtHandshake
 
@@ -90,6 +95,7 @@ func Dial(p tracker.Peer, infoHash, peerID [20]byte, timeout time.Duration) (*Co
 
 		SupportsExtensions: remoteHS.SupportsExtension(),
 		SupportsDHT:        remoteHS.SupportsDHT(),
+		SupportsFast:       remoteHS.SupportsFast(),
 	}
 
 	// Read initial bitfield if peer sends one immediately
@@ -160,6 +166,7 @@ func AcceptHandshake(netConn net.Conn, ourPeerID [20]byte, timeout time.Duration
 
 		SupportsExtensions: remoteHS.SupportsExtension(),
 		SupportsDHT:        remoteHS.SupportsDHT(),
+		SupportsFast:       remoteHS.SupportsFast(),
 	}, nil
 }
 
@@ -269,6 +276,11 @@ func (c *Conn) UpdateState(msg *Message) {
 		}
 	case MsgBitfield:
 		c.Bitfield = Bitfield(msg.Payload)
+	case MsgHaveAll:
+		c.PeerHasAll = true
+	case MsgHaveNone:
+		c.PeerHasAll = false
+		c.Bitfield = nil
 	case MsgExtended:
 		if extID, payload, err := ParseExtended(msg); err == nil && extID == ExtHandshakeID {
 			if hs, err := ParseExtHandshake(payload); err == nil {

@@ -21,6 +21,13 @@ const (
 	MsgPiece         MessageID = 7
 	MsgCancel        MessageID = 8
 	MsgPort          MessageID = 9 // BEP 0005: the sender's DHT UDP port
+
+	// BEP 0006 Fast Extension.
+	MsgSuggest       MessageID = 13
+	MsgHaveAll       MessageID = 14
+	MsgHaveNone      MessageID = 15
+	MsgRejectRequest MessageID = 16
+	MsgAllowedFast   MessageID = 17
 )
 
 // FormatPort builds a MsgPort (ID 9) message advertising our DHT UDP port.

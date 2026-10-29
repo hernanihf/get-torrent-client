@@ -383,3 +383,41 @@ func (pm *PieceManager) SetVerified(have peer.Bitfield) {
 		p.mu.Unlock()
 	}
 }
+
+// ReleaseRequest withdraws peerAddr's request for a block that will not arrive (the peer
+// rejected it, choked us without the Fast Extension, or disconnected). The block becomes
+// requestable again unless another peer still has it outstanding.
+func (pm *PieceManager) ReleaseRequest(index, begin int, peerAddr string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if index < 0 || index >= len(pm.Pieces) {
+		return
+	}
+	key := fmt.Sprintf("%d:%d", index, begin)
+	peers := pm.activeRequests[key]
+	for i, a := range peers {
+		if a == peerAddr {
+			peers = append(peers[:i], peers[i+1:]...)
+			break
+		}
+	}
+	if len(peers) > 0 {
+		pm.activeRequests[key] = peers
+		return
+	}
+	delete(pm.activeRequests, key)
+	pm.Pieces[index].releaseBlock(begin)
+}
+
+// BlockReceived reports whether a block is already held, in its piece buffer or on disk.
+func (pm *PieceManager) BlockReceived(index, begin int) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	if index < 0 || index >= len(pm.Pieces) {
+		return true
+	}
+	if pm.Bitfield.HasPiece(index) {
+		return true
+	}
+	return pm.Pieces[index].hasBlock(begin)
+}

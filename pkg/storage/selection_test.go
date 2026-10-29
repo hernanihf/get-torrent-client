@@ -58,3 +58,38 @@ func equalInts(a, b []int) bool {
 	}
 	return true
 }
+
+func TestReleaseRequestMakesBlockRequestableAgain(t *testing.T) {
+	const n = 40 // well outside endgame, where any unreceived block may be re-requested anyway
+	meta := &metainfo.TorrentMeta{
+		PieceLength: 16384, TotalLength: n * 16384, Pieces: make([][20]byte, n),
+		Files: []metainfo.FileInfo{{Length: n * 16384, Path: []string{"x"}}},
+	}
+	pm := NewPieceManager(meta, nil)
+	all := make(peer.Bitfield, (n+7)/8)
+	for i := 0; i < n; i++ {
+		all.SetPiece(i)
+	}
+	req, ok := pm.NextRequest(all)
+	if !ok {
+		t.Fatal("no request")
+	}
+	pm.RegisterRequest(req.PieceIndex, req.Begin, "a")
+	pm.RegisterRequest(req.PieceIndex, req.Begin, "b")
+	if next, _ := pm.NextRequest(all); next.PieceIndex == req.PieceIndex && next.Begin == req.Begin {
+		t.Fatal("a requested block must not be handed out again outside endgame")
+	}
+
+	// Still outstanding with b: not requestable yet.
+	pm.ReleaseRequest(req.PieceIndex, req.Begin, "a")
+	if pm.Pieces[req.PieceIndex].RequestedMap[0] != true {
+		t.Error("block released while another peer still has it requested")
+	}
+	pm.ReleaseRequest(req.PieceIndex, req.Begin, "b")
+	if pm.Pieces[req.PieceIndex].RequestedMap[0] {
+		t.Error("block must be requestable once no peer has it outstanding")
+	}
+	if pm.BlockReceived(req.PieceIndex, req.Begin) {
+		t.Error("released block is not received")
+	}
+}

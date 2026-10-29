@@ -175,10 +175,13 @@ func (s *peerSession) applyChoke(choke bool) {
 	if choke {
 		id = peer.MsgChoke
 	}
-	if choke && s.uploads != nil {
-		s.uploads.clear()
-	}
 	s.send(&peer.Message{ID: idPtr(id)})
 	s.conn.AmChoking = choke
+	if choke && s.uploads != nil {
+		// After the choke, so a Fast peer does not re-request while it thinks it is unchoked.
+		for _, r := range s.uploads.clear() {
+			s.reject(r)
+		}
+	}
 	s.publish()
 }

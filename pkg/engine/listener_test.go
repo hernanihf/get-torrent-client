@@ -322,10 +322,17 @@ func TestInboundEmptyBitfield(t *testing.T) {
 		t.Fatalf("reading reciprocal handshake: %v", err)
 	}
 
-	// First message should be MsgInterested directly, omitting MsgBitfield
+	// Both sides support the Fast Extension, so an empty bitfield is sent as Have None
+	// (BEP 0006 requires one of bitfield/Have All/Have None first), then interest.
 	msg, err := peer.ReadMessage(c)
 	if err != nil {
 		t.Fatalf("reading first message: %v", err)
+	}
+	if msg.ID == nil || *msg.ID != peer.MsgHaveNone {
+		t.Fatalf("expected MsgHaveNone first, got %v", msg.ID)
+	}
+	if msg, err = peer.ReadMessage(c); err != nil {
+		t.Fatalf("reading second message: %v", err)
 	}
 	if msg.ID == nil || *msg.ID != peer.MsgInterested {
 		t.Errorf("expected MsgInterested (ID 2), got %v", msg.ID)
