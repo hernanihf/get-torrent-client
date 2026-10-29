@@ -29,6 +29,7 @@ const (
 	StateDownloading TorrentState = "downloading"
 	StateSeeding     TorrentState = "seeding"
 	StateError       TorrentState = "error"
+	StateChecking    TorrentState = "checking" // verifying local data (torrent-verify)
 )
 
 // ManagedTorrent wraps metadata, disk storage, and live connection state for a torrent.
@@ -50,12 +51,48 @@ type ManagedTorrent struct {
 	Peers        []tracker.Peer
 	ActivePeers  int
 	LastError    string
+	DownloadDir  string
+	CorruptEver  int64 // bytes discarded because their piece failed SHA-1 verification
+	AddedDate    time.Time
+	DoneDate     time.Time
 	activeConns  []*peer.Conn
 	dialing      map[string]bool // peer addresses with an outbound dial in progress
 	stopChan     chan struct{}
 	trackers     []string            // magnet trackers, used until metadata provides its own
 	metadata     *metadata.Assembler // non-nil while metadata is being fetched
-	mu           sync.RWMutex
+
+	startDate      time.Time
+	activityDate   time.Time
+	stateSince     time.Time // when State last changed, for time accounting
+	secondsDown    float64   // accumulated time spent downloading, excluding the current stint
+	secondsSeed    float64   // accumulated time spent seeding, excluding the current stint
+	down, up       rateMeter
+	peerInfos      map[*peer.Conn]*peerInfo
+	trackerRecords map[string]*trackerRecord
+	nextAnnounce   time.Time
+	reannounce     chan struct{} // wakes the discovery loop early (torrent-reannounce)
+	recheck        float64       // torrent-verify progress, 0..1
+	restartAfter   bool          // restart once verification finishes
+
+	mu sync.RWMutex
+}
+
+// setStateLocked changes State, accounting time spent downloading/seeding. Caller holds t.mu.
+func (t *ManagedTorrent) setStateLocked(s TorrentState) {
+	now := time.Now()
+	if !t.stateSince.IsZero() {
+		switch t.State {
+		case StateDownloading:
+			t.secondsDown += now.Sub(t.stateSince).Seconds()
+		case StateSeeding:
+			t.secondsSeed += now.Sub(t.stateSince).Seconds()
+		}
+	}
+	if s == StateSeeding && t.State != StateSeeding && t.DoneDate.IsZero() {
+		t.DoneDate = now
+	}
+	t.State = s
+	t.stateSince = now
 }
 
 // components returns the metadata-dependent parts of a torrent; pm and store are nil for a magnet
@@ -66,6 +103,13 @@ func (t *ManagedTorrent) components() (*metainfo.TorrentMeta, *storage.PieceMana
 	return t.Meta, t.PieceManager, t.Storage
 }
 
+// Error kinds reported with a torrent (values match Transmission's tr_stat_errtype).
+const (
+	ErrorNone         = 0
+	ErrorTrackerError = 2 // peer discovery failing; the torrent keeps running and retrying
+	ErrorLocal        = 3 // the torrent stopped because of a local problem
+)
+
 // TorrentStatus is a consistent snapshot of a torrent for reporting (e.g. RPC torrent-get).
 type TorrentStatus struct {
 	ID                      int
@@ -75,30 +119,86 @@ type TorrentStatus struct {
 	TotalSize               int64
 	PercentDone             float64 // 0..1
 	MetadataPercentComplete float64 // 0..1
+	RecheckProgress         float64 // 0..1
 	Left                    int64
-	Downloaded              int64
+	HaveValid               int64 // verified bytes on disk
+	Downloaded              int64 // payload bytes received, including discarded ones
 	Uploaded                int64
+	CorruptEver             int64
+	RateDownload            int64 // B/s
+	RateUpload              int64 // B/s
 	ActivePeers             int
+	PeersSendingToUs        int
+	PeersGettingFromUs      int
+	PeersFrom               map[PeerSource]int
 	MagnetURI               string
 	Error                   string
+	ErrorKind               int
+	DownloadDir             string
+	TorrentFile             string
+	PieceCount              int
+	PieceSize               int64
+	Private                 bool
+	Comment                 string
+	Creator                 string
+	DateCreated             int64
+	AddedDate               int64 // Unix seconds; 0 if unknown
+	DoneDate                int64
+	StartDate               int64
+	ActivityDate            int64
+	SecondsDownloading      int64
+	SecondsSeeding          int64
+}
+
+func unix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // Status returns a race-free snapshot of the torrent's state.
 func (t *ManagedTorrent) Status() TorrentStatus {
+	now := time.Now()
 	t.mu.RLock()
+	meta := t.Meta
 	st := TorrentStatus{
-		ID:          t.ID,
-		Name:        t.Meta.Name,
-		InfoHash:    t.Meta.InfoHash,
-		State:       t.State,
-		TotalSize:   t.Meta.TotalLength,
-		Left:        t.Left,
-		Downloaded:  t.Downloaded,
-		Uploaded:    t.Uploaded,
-		ActivePeers: t.ActivePeers,
-		MagnetURI:   t.MagnetURI,
-		Error:       t.LastError,
+		ID:              t.ID,
+		Name:            meta.Name,
+		InfoHash:        meta.InfoHash,
+		State:           t.State,
+		TotalSize:       meta.TotalLength,
+		RecheckProgress: t.recheck,
+		Left:            t.Left,
+		Downloaded:      t.Downloaded,
+		Uploaded:        t.Uploaded,
+		CorruptEver:     t.CorruptEver,
+		ActivePeers:     t.ActivePeers,
+		MagnetURI:       t.MagnetURI,
+		Error:           t.LastError,
+		DownloadDir:     t.DownloadDir,
+		TorrentFile:     t.TorrentPath,
+		PieceCount:      len(meta.Pieces),
+		PieceSize:       meta.PieceLength,
+		Private:         meta.Private,
+		Comment:         meta.Comment,
+		Creator:         meta.CreatedBy,
+		DateCreated:     meta.CreationDate,
+		AddedDate:       unix(t.AddedDate),
+		DoneDate:        unix(t.DoneDate),
+		StartDate:       unix(t.startDate),
+		ActivityDate:    unix(t.activityDate),
 	}
+	secDown, secSeed := t.secondsDown, t.secondsSeed
+	if !t.stateSince.IsZero() {
+		switch t.State {
+		case StateDownloading:
+			secDown += now.Sub(t.stateSince).Seconds()
+		case StateSeeding:
+			secSeed += now.Sub(t.stateSince).Seconds()
+		}
+	}
+	st.SecondsDownloading, st.SecondsSeeding = int64(secDown), int64(secSeed)
 	pm, asm := t.PieceManager, t.metadata
 	t.mu.RUnlock()
 
@@ -106,35 +206,70 @@ func (t *ManagedTorrent) Status() TorrentStatus {
 		st.Name = hex.EncodeToString(st.InfoHash[:])
 	}
 	switch {
+	case st.Error == "":
+	case st.State == StateError:
+		st.ErrorKind = ErrorLocal
+	default:
+		st.ErrorKind = ErrorTrackerError
+	}
+	switch {
 	case pm != nil:
-		pct, _ := pm.Progress()
+		pct, have := pm.Progress()
 		st.PercentDone = pct / 100.0
+		st.HaveValid = have
+		st.Left = st.TotalSize - have
 		st.MetadataPercentComplete = 1
 	case asm != nil:
 		st.MetadataPercentComplete = asm.Progress()
+	}
+
+	st.RateDownload = t.down.rate(now)
+	st.RateUpload = t.up.rate(now)
+	st.PeersFrom = make(map[PeerSource]int)
+	for _, p := range t.PeerList() {
+		st.PeersFrom[p.Source]++
+		if p.RateToClient > 0 {
+			st.PeersSendingToUs++
+		}
+		if p.RateToPeer > 0 {
+			st.PeersGettingFromUs++
+		}
 	}
 	return st
 }
 
 // Engine orchestrates torrent downloads, peer connections, tracker announces, and session state.
 type Engine struct {
-	PeerID           [20]byte
-	Port             uint16
-	DownloadDir      string
-	ConfigDir        string
-	SpeedLimitDown   int64
-	SpeedLimitUp     int64
-	torrents         map[[20]byte]*ManagedTorrent
-	mu               sync.RWMutex
-	nextID           int
-	listener         net.Listener
-	listenerStopChan chan struct{}
+	PeerID         [20]byte
+	Port           uint16
+	DownloadDir    string
+	ConfigDir      string
+	SpeedLimitDown int64 // KB/s, as in Transmission's speed-limit-down (not yet enforced)
+	SpeedLimitUp   int64 // KB/s (not yet enforced)
+
+	SpeedLimitDownEnabled bool
+	SpeedLimitUpEnabled   bool
+	torrents              map[[20]byte]*ManagedTorrent
+	mu                    sync.RWMutex
+	nextID                int
+	listener              net.Listener
+	listenerStopChan      chan struct{}
 
 	// DHT is the BEP 0005 node used for trackerless peer discovery; nil when disabled.
 	DHT *dht.Server
 
 	ctx    context.Context // cancelled by Close
 	cancel context.CancelFunc
+
+	stats      sessionStats
+	cumulative CumulativeStats // totals from previous sessions (state.json)
+	removed    []removedTorrent
+}
+
+// removedTorrent remembers a removal for torrent-get's "recently-active" ids.
+type removedTorrent struct {
+	id int
+	at time.Time
 }
 
 // NewEngine creates and initializes a BitTorrent engine.
@@ -145,6 +280,7 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
+		stats:            sessionStats{started: time.Now()},
 		ctx:              ctx,
 		cancel:           cancel,
 		PeerID:           peerID,
@@ -163,7 +299,7 @@ func (e *Engine) AddTorrentFile(path string) (*ManagedTorrent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening torrent file: %w", err)
 	}
-	return e.addMeta(meta, path)
+	return e.addMeta(meta, path, "")
 }
 
 // AddTorrentBytes registers a torrent from raw .torrent contents (e.g. RPC "metainfo").
@@ -177,18 +313,22 @@ func (e *Engine) AddTorrentBytes(data []byte) (*ManagedTorrent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.addMeta(meta, path)
+	return e.addMeta(meta, path, "")
 }
 
-func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path string) (*ManagedTorrent, error) {
+// addMeta registers a torrent with known metadata; dir overrides the session download dir.
+func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path, dir string) (*ManagedTorrent, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if t, exists := e.torrents[meta.InfoHash]; exists {
 		return t, nil
 	}
+	if dir == "" {
+		dir = e.DownloadDir
+	}
 
-	store, err := storage.NewStorage(e.DownloadDir, meta)
+	store, err := storage.NewStorage(dir, meta)
 	if err != nil {
 		return nil, fmt.Errorf("allocating storage: %w", err)
 	}
@@ -205,10 +345,14 @@ func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path string) (*ManagedTorre
 		Downloaded:   0,
 		Uploaded:     0,
 		Left:         meta.TotalLength,
+		DownloadDir:  dir,
+		AddedDate:    time.Now(),
 		stopChan:     make(chan struct{}),
+		reannounce:   make(chan struct{}, 1),
 	}
 	e.nextID++
 	e.torrents[meta.InfoHash] = t
+	e.stats.filesAdded.Add(int64(len(meta.Files)))
 
 	log.Printf("[Engine] Added torrent: %q (%d MB, %d pieces)",
 		meta.Name, meta.TotalLength/(1024*1024), len(meta.Pieces))
@@ -241,12 +385,18 @@ func (e *Engine) StartTorrent(id int) error {
 		t.mu.Unlock()
 		return nil // Already running
 	}
+	if t.State == StateChecking {
+		t.restartAfter = true // start once verification finishes
+		t.mu.Unlock()
+		return nil
+	}
 
 	if t.PieceManager != nil && t.PieceManager.IsComplete() {
-		t.State = StateSeeding
+		t.setStateLocked(StateSeeding)
 	} else {
-		t.State = StateDownloading
+		t.setStateLocked(StateDownloading)
 	}
+	t.startDate = time.Now()
 	t.LastError = ""
 	t.stopChan = make(chan struct{})
 	stop := t.stopChan
@@ -268,8 +418,13 @@ func (e *Engine) StopTorrent(id int) error {
 		t.mu.Unlock()
 		return nil
 	}
+	if t.State == StateChecking {
+		t.restartAfter = false // verification continues, but the torrent stays stopped
+		t.mu.Unlock()
+		return nil
+	}
 
-	t.State = StateStopped
+	t.setStateLocked(StateStopped)
 	select {
 	case <-t.stopChan:
 		// already closed
@@ -305,6 +460,7 @@ func (e *Engine) RemoveTorrent(id int, deleteFiles bool) error {
 	// 2. Remove from active map
 	e.mu.Lock()
 	delete(e.torrents, meta.InfoHash)
+	e.removed = append(e.removed, removedTorrent{id: t.ID, at: time.Now()})
 	e.mu.Unlock()
 
 	// 3. Close storage file handles
@@ -328,7 +484,7 @@ func (e *Engine) setError(t *ManagedTorrent, err error) {
 	defer t.mu.Unlock()
 	// Only flag an error if the torrent has not been stopped meanwhile.
 	if t.State == StateDownloading || t.State == StateSeeding {
-		t.State = StateError
+		t.setStateLocked(StateError)
 		t.LastError = err.Error()
 	}
 }
@@ -369,6 +525,8 @@ func (e *Engine) runTorrent(t *ManagedTorrent, stop <-chan struct{}) {
 		if t.ActivePeers == 0 {
 			wait = retryInterval
 		}
+		t.nextAnnounce = time.Now().Add(wait)
+		reannounce := t.reannounce
 		t.mu.Unlock()
 
 		timer := time.NewTimer(wait)
@@ -377,6 +535,8 @@ func (e *Engine) runTorrent(t *ManagedTorrent, stop <-chan struct{}) {
 			timer.Stop()
 			return
 		case <-timer.C:
+		case <-reannounce:
+			timer.Stop()
 		}
 	}
 }
@@ -393,7 +553,7 @@ func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
 	t.mu.RUnlock()
 
 	type result struct {
-		source string
+		source PeerSource
 		peers  []tracker.Peer
 		err    error
 	}
@@ -402,7 +562,7 @@ func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
 	if len(trackers) > 0 {
 		sources = append(sources, func() result {
 			peers, err := e.announce(t, trackers)
-			return result{"trackers", peers, err}
+			return result{SourceTracker, peers, err}
 		})
 	}
 	// Private torrents must not leak to the DHT (BEP 0027).
@@ -418,7 +578,7 @@ func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
 				}
 			}()
 			peers, err := server.Announce(ctx, meta.InfoHash, e.Port)
-			return result{"DHT", peers, err}
+			return result{SourceDHT, peers, err}
 		})
 	}
 	if len(sources) == 0 {
@@ -443,7 +603,7 @@ func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
 			continue
 		}
 		log.Printf("[Engine] %s returned %d peers for %q", r.source, len(r.peers), meta.Name)
-		e.connectPeers(t, r.peers)
+		e.connectPeers(t, r.peers, r.source)
 	}
 	if len(errs) == len(sources) {
 		return errors.Join(errs...)
@@ -452,7 +612,7 @@ func (e *Engine) discoverPeers(t *ManagedTorrent, stop <-chan struct{}) error {
 }
 
 // connectPeers dials peers that are not already connected or being dialed, within the peer limit.
-func (e *Engine) connectPeers(t *ManagedTorrent, peers []tracker.Peer) {
+func (e *Engine) connectPeers(t *ManagedTorrent, peers []tracker.Peer, source PeerSource) {
 	for _, p := range peers {
 		addr := p.String()
 		if !t.startDial(p) {
@@ -460,7 +620,7 @@ func (e *Engine) connectPeers(t *ManagedTorrent, peers []tracker.Peer) {
 		}
 		go func(p tracker.Peer) {
 			defer t.endDial(addr)
-			e.connectPeer(t, p)
+			e.connectPeer(t, p, source)
 		}(p)
 	}
 }
@@ -504,7 +664,7 @@ func (t *ManagedTorrent) endDial(addr string) {
 }
 
 // connectPeer dials one peer and runs its session until it disconnects.
-func (e *Engine) connectPeer(t *ManagedTorrent, p tracker.Peer) {
+func (e *Engine) connectPeer(t *ManagedTorrent, p tracker.Peer, source PeerSource) {
 	meta, _, _ := t.components()
 	conn, err := peer.Dial(p, meta.InfoHash, e.PeerID, 8*time.Second)
 	if err != nil {
@@ -512,7 +672,7 @@ func (e *Engine) connectPeer(t *ManagedTorrent, p tracker.Peer) {
 	}
 	defer conn.Close()
 
-	if !e.registerConn(t, conn) {
+	if !e.registerConn(t, conn, source) {
 		return
 	}
 	defer e.unregisterConn(t, conn)
@@ -527,7 +687,7 @@ func (e *Engine) connectPeer(t *ManagedTorrent, p tracker.Peer) {
 
 // registerConn adds a connection to the torrent's active set, enforcing the peer limit and
 // de-duplicating by peer ID. It returns false if the connection must be dropped.
-func (e *Engine) registerConn(t *ManagedTorrent, conn *peer.Conn) bool {
+func (e *Engine) registerConn(t *ManagedTorrent, conn *peer.Conn, source PeerSource) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -549,12 +709,34 @@ func (e *Engine) registerConn(t *ManagedTorrent, conn *peer.Conn) bool {
 	}
 	t.ActivePeers++
 	t.activeConns = append(t.activeConns, conn)
+
+	pi := &peerInfo{
+		addr:     conn.RemotePeer.String(),
+		port:     int(conn.RemotePeer.Port),
+		source:   source,
+		incoming: source == SourceIncoming,
+	}
+	if conn.RemotePeer.IP != nil {
+		pi.ip = conn.RemotePeer.IP.String()
+	}
+	if t.peerInfos == nil {
+		t.peerInfos = make(map[*peer.Conn]*peerInfo)
+	}
+	t.peerInfos[conn] = pi
 	return true
+}
+
+// peerInfoFor returns the reporting record of a registered connection.
+func (t *ManagedTorrent) peerInfoFor(conn *peer.Conn) *peerInfo {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.peerInfos[conn]
 }
 
 func (e *Engine) unregisterConn(t *ManagedTorrent, conn *peer.Conn) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	delete(t.peerInfos, conn)
 	for i, c := range t.activeConns {
 		if c == conn {
 			t.activeConns = append(t.activeConns[:i], t.activeConns[i+1:]...)
@@ -596,9 +778,11 @@ func (e *Engine) announce(t *ManagedTorrent, trackers []string) ([]tracker.Peer,
 		go func() {
 			resp, err := tracker.Announce(p)
 			if err != nil {
+				t.recordAnnounce(p.AnnounceURL, 0, err)
 				results <- result{err: fmt.Errorf("%s: %w", p.AnnounceURL, err)}
 				return
 			}
+			t.recordAnnounce(p.AnnounceURL, len(resp.Peers), nil)
 			results <- result{peers: resp.Peers}
 		}()
 	}

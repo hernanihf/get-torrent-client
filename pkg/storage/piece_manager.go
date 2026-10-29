@@ -246,3 +246,54 @@ func (pm *PieceManager) Progress() (percent float64, downloaded int64) {
 	percent = (float64(pm.DownloadedBytes) / float64(pm.TotalBytes)) * 100.0
 	return percent, pm.DownloadedBytes
 }
+
+// Snapshot is a consistent copy of piece-level state for reporting.
+type Snapshot struct {
+	Have         peer.Bitfield // pieces verified and on disk
+	Availability []int         // per-piece count of connected peers having it
+}
+
+// Snapshot returns a copy of the bitfield and availability, safe to use without locks.
+func (pm *PieceManager) Snapshot() Snapshot {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return Snapshot{
+		Have:         append(peer.Bitfield(nil), pm.Bitfield...),
+		Availability: append([]int(nil), pm.Availability...),
+	}
+}
+
+// HasPiece reports whether a piece is verified and on disk. Safe for concurrent use.
+func (pm *PieceManager) HasPiece(index int) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.Bitfield.HasPiece(index)
+}
+
+// SetVerified replaces piece completion state with the result of a full hash check of the data
+// on disk (have marks the pieces that verified). Outstanding requests are forgotten.
+func (pm *PieceManager) SetVerified(have peer.Bitfield) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	pm.CompletedPieces = 0
+	pm.DownloadedBytes = 0
+	pm.activeRequests = make(map[string][]string)
+	for i, p := range pm.Pieces {
+		p.mu.Lock()
+		if have.HasPiece(i) {
+			pm.Bitfield.SetPiece(i)
+			p.IsComplete = true
+			p.Data = nil
+			pm.CompletedPieces++
+			pm.DownloadedBytes += int64(p.Length)
+		} else {
+			pm.Bitfield[i/8] &^= 1 << (7 - uint(i%8))
+			p.resetLocked()
+			if p.Data == nil {
+				p.Data = make([]byte, p.Length)
+			}
+		}
+		p.mu.Unlock()
+	}
+}

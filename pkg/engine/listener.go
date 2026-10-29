@@ -120,7 +120,7 @@ func (e *Engine) handleInboundConn(netConn net.Conn) {
 	}
 
 	// Enforces running state, peer-ID de-duplication and the per-torrent peer limit.
-	if !e.registerConn(t, conn) {
+	if !e.registerConn(t, conn, SourceIncoming) {
 		return
 	}
 	defer e.unregisterConn(t, conn)

@@ -155,6 +155,26 @@ func TestMagnetEndToEnd(t *testing.T) {
 		t.Errorf("unexpected final status: %+v", s)
 	}
 
+	// Transfer accounting reached both sides.
+	if s.Downloaded < int64(len(payload)) || s.HaveValid != int64(len(payload)) || s.DoneDate == 0 || s.AddedDate == 0 {
+		t.Errorf("leecher accounting: downloaded=%d have=%d done=%d added=%d", s.Downloaded, s.HaveValid, s.DoneDate, s.AddedDate)
+	}
+	if up := st.Status().Uploaded; up < int64(len(payload)) {
+		t.Errorf("seeder uploaded %d bytes, expected at least %d", up, len(payload))
+	}
+	if s.PeersFrom[SourceTracker] != 1 {
+		t.Errorf("expected one peer from the tracker, got %v", s.PeersFrom)
+	}
+	if ss := st.Status(); ss.PeersFrom[SourceIncoming] != 1 {
+		t.Errorf("seeder should see one incoming peer, got %v", ss.PeersFrom)
+	}
+	if trs := lt.TrackerList(); len(trs) != 1 || !trs[0].LastAnnounceSucceeded || trs[0].LastAnnouncePeerCount != 1 {
+		t.Errorf("unexpected tracker stats: %+v", trs)
+	}
+	if peers := lt.PeerList(); len(peers) != 1 || peers[0].Progress != 1 || peers[0].ClientName == "" {
+		t.Errorf("unexpected peer list: %+v", peers)
+	}
+
 	got, err := os.ReadFile(filepath.Join(leechDir, "payload.bin"))
 	if err != nil {
 		t.Fatalf("reading downloaded file: %v", err)
@@ -315,4 +335,13 @@ func TestServesMetadataToPeers(t *testing.T) {
 			gotReject = true
 		}
 	}
+}
+
+func mustMeta(t *testing.T, info []byte) *metainfo.TorrentMeta {
+	t.Helper()
+	meta, err := metainfo.FromInfoBytes(info, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return meta
 }

@@ -34,6 +34,11 @@ type TorrentMeta struct {
 	Pieces       [][20]byte
 	TotalLength  int64
 	Files        []FileInfo
+	// Optional descriptive fields from the top-level dictionary.
+	Comment      string
+	CreatedBy    string
+	CreationDate int64 // Unix seconds, 0 if absent
+
 	// Private torrents (BEP 0027) must only get peers from their trackers, never the DHT.
 	Private bool
 	// InfoBytes is the exact bencoded info dictionary; its SHA-1 is InfoHash.
@@ -65,6 +70,15 @@ func (m *TorrentMeta) Marshal() ([]byte, error) {
 		return nil, errors.New("metainfo has no info dictionary bytes")
 	}
 	dict := map[string]any{"info": bencode.RawMessage(m.InfoBytes)}
+	if m.Comment != "" {
+		dict["comment"] = m.Comment
+	}
+	if m.CreatedBy != "" {
+		dict["created by"] = m.CreatedBy
+	}
+	if m.CreationDate > 0 {
+		dict["creation date"] = m.CreationDate
+	}
 	if m.Announce != "" {
 		dict["announce"] = m.Announce
 	}
@@ -148,6 +162,9 @@ func Parse(data []byte) (*TorrentMeta, error) {
 		return nil, err
 	}
 	meta.Announce = announce
+	meta.Comment, _ = dict["comment"].(string)
+	meta.CreatedBy, _ = dict["created by"].(string)
+	meta.CreationDate, _ = dict["creation date"].(int64)
 	meta.InfoBytes = infoBytes
 	meta.InfoHash = sha1.Sum(infoBytes)
 

@@ -1,12 +1,16 @@
+// Package rpc implements the Transmission RPC protocol (legacy "bespoke" dialect, rpc-version 17
+// as in Transmission 4.0.x) on top of the get-torrent engine, so existing Transmission clients
+// such as transmission-remote and Transmission Remote GUI can control the daemon.
 package rpc
 
 import (
 	"crypto/rand"
-	"encoding/base64"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,20 +18,45 @@ import (
 	"github.com/hernan/get-torrent/pkg/engine"
 )
 
-const HeaderSessionID = "X-Transmission-Session-Id"
+const (
+	HeaderSessionID = "X-Transmission-Session-Id"
 
-// Request represents a standard Transmission JSON-RPC request.
+	// RPCVersion is the Transmission RPC version we implement (Transmission 4.0.x).
+	RPCVersion        = 17
+	RPCVersionMinimum = 14
+	RPCVersionSemver  = "5.3.0"
+
+	// maxRequestBytes bounds request bodies; torrent-add metainfo is base64 .torrent data.
+	maxRequestBytes = 32 << 20
+)
+
+// Request represents a Transmission RPC request.
 type Request struct {
 	Method    string         `json:"method"`
 	Arguments map[string]any `json:"arguments,omitempty"`
-	Tag       int            `json:"tag,omitempty"`
+	Tag       *int64         `json:"tag,omitempty"`
 }
 
-// Response represents a standard Transmission JSON-RPC response.
+// Response represents a Transmission RPC response. Arguments is always present (possibly empty),
+// as in Transmission.
 type Response struct {
 	Result    string         `json:"result"`
-	Arguments map[string]any `json:"arguments,omitempty"`
-	Tag       int            `json:"tag,omitempty"`
+	Arguments map[string]any `json:"arguments"`
+	Tag       *int64         `json:"tag,omitempty"`
+}
+
+// Options configures access control for the RPC server.
+type Options struct {
+	// Username and Password enable HTTP Basic authentication when Username is non-empty.
+	Username string
+	Password string
+	// HostWhitelist lists extra Host header names allowed besides IP addresses and "localhost".
+	// Entries may start with "*." to match subdomains. This blocks DNS-rebinding attacks.
+	HostWhitelist []string
+	// OnSessionClose is called (asynchronously) when a client sends "session-close".
+	OnSessionClose func()
+	// PortChecker reports whether the peer port is reachable from the Internet ("port-test").
+	PortChecker func(port uint16) (bool, error)
 }
 
 // Server provides Transmission-compatible RPC endpoints backed by the engine.
@@ -36,31 +65,94 @@ type Server struct {
 	sessionID string
 	addr      string
 	engine    *engine.Engine
+	opts      Options
 }
 
 // NewServer creates a new RPC server instance bound to an engine.
 func NewServer(addr string, eng *engine.Engine) *Server {
+	return NewServerWithOptions(addr, eng, Options{})
+}
+
+// NewServerWithOptions creates an RPC server with authentication and host restrictions.
+func NewServerWithOptions(addr string, eng *engine.Engine, opts Options) *Server {
 	token := make([]byte, 16)
 	_, _ = rand.Read(token)
+	if opts.PortChecker == nil {
+		opts.PortChecker = checkPortOnline
+	}
 	return &Server{
 		sessionID: hex.EncodeToString(token),
 		addr:      addr,
 		engine:    eng,
+		opts:      opts,
 	}
 }
 
 // Handler returns the HTTP handler for Transmission RPC.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// transmission-remote posts to "/transmission/rpc/" (trailing slash); other clients omit it.
 	mux.HandleFunc("/transmission/rpc", s.handleRPC)
+	mux.HandleFunc("/transmission/rpc/", s.handleRPC)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorize(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, "<h1>get-torrent (Transmission Clone)</h1><p>RPC endpoint active at <code>/transmission/rpc</code></p>")
 	})
 	return mux
 }
 
+// authorize enforces the Host whitelist and Basic authentication, writing an error response
+// and returning false when the request is rejected.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) bool {
+	if !s.hostAllowed(r.Host) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusMisdirectedRequest)
+		fmt.Fprintf(w, "<h1>421: Misdirected Request</h1><p>Transmission received your request, but the hostname was unrecognized.</p>")
+		return false
+	}
+	if s.opts.Username != "" {
+		user, pass, ok := r.BasicAuth()
+		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.opts.Username)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.opts.Password)) == 1
+		if !ok || !userOK || !passOK {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Transmission"`)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, "<h1>401: Unauthorized</h1>")
+			return false
+		}
+	}
+	return true
+}
+
+// hostAllowed accepts IP literals, "localhost", and whitelisted names (DNS-rebinding protection,
+// as in Transmission's rpc-host-whitelist).
+func (s *Server) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") || net.ParseIP(host) != nil {
+		return true
+	}
+	for _, allowed := range s.opts.HostWhitelist {
+		allowed = strings.ToLower(allowed)
+		if allowed == host || (strings.HasPrefix(allowed, "*.") && strings.HasSuffix(host, allowed[1:])) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r) {
+		return
+	}
+
 	s.mu.RLock()
 	currentSessionID := s.sessionID
 	s.mu.RUnlock()
@@ -84,249 +176,175 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes)).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(Response{Result: "invalid json request"})
+		_ = json.NewEncoder(w).Encode(Response{Result: "invalid json request", Arguments: map[string]any{}})
 		return
+	}
+	if req.Arguments == nil {
+		req.Arguments = map[string]any{}
 	}
 
 	resp := s.dispatch(req)
+	resp.Tag = req.Tag
+	if resp.Arguments == nil {
+		resp.Arguments = map[string]any{}
+	}
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// handlerFunc implements one RPC method, returning response arguments or an error whose text
+// becomes the "result" string.
+type handlerFunc func(s *Server, args map[string]any) (map[string]any, error)
+
+var methods = map[string]handlerFunc{
+	"session-get":          (*Server).sessionGet,
+	"session-set":          (*Server).sessionSet,
+	"session-stats":        (*Server).sessionStats,
+	"session-close":        (*Server).sessionClose,
+	"free-space":           (*Server).freeSpace,
+	"port-test":            (*Server).portTest,
+	"torrent-get":          (*Server).torrentGet,
+	"torrent-add":          (*Server).torrentAdd,
+	"torrent-set":          (*Server).torrentSet,
+	"torrent-start":        forEach(func(e *engine.Engine, id int) error { return e.StartTorrent(id) }),
+	"torrent-start-now":    forEach(func(e *engine.Engine, id int) error { return e.StartTorrent(id) }),
+	"torrent-stop":         forEach(func(e *engine.Engine, id int) error { return e.StopTorrent(id) }),
+	"torrent-verify":       forEach(func(e *engine.Engine, id int) error { return e.VerifyTorrent(id) }),
+	"torrent-reannounce":   forEach(func(e *engine.Engine, id int) error { return e.Reannounce(id) }),
+	"torrent-remove":       (*Server).torrentRemove,
+	"queue-move-top":       noQueue,
+	"queue-move-up":        noQueue,
+	"queue-move-down":      noQueue,
+	"queue-move-bottom":    noQueue,
+	"blocklist-update":     unsupported,
+	"torrent-set-location": unsupported,
+	"torrent-rename-path":  unsupported,
+	"group-get":            unsupported,
+	"group-set":            unsupported,
+}
+
 func (s *Server) dispatch(req Request) Response {
-	switch req.Method {
-	case "session-get":
-		downloadDir := "/Downloads"
-		var speedDown, speedUp int64
-		var peerPort uint16 = 51413
-		if s.engine != nil {
-			downloadDir = s.engine.DownloadDir
-			speedDown = s.engine.SpeedLimitDown
-			speedUp = s.engine.SpeedLimitUp
-			peerPort = s.engine.Port
-		}
+	h, ok := methods[req.Method]
+	if !ok {
+		log.Printf("[RPC] Unknown method: %s", req.Method)
+		return Response{Result: "method name not recognized"}
+	}
+	if s.engine == nil {
+		return Response{Result: "engine unavailable"}
+	}
+	args, err := h(s, req.Arguments)
+	if err != nil {
+		return Response{Result: err.Error()}
+	}
+	return Response{Result: "success", Arguments: args}
+}
 
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-			Arguments: map[string]any{
-				"version":                  "4.0.0 (get-torrent)",
-				"rpc-version":              17,
-				"rpc-version-minimum":      14,
-				"download-dir":             downloadDir,
-				"download-dir-free-space":  100000000000,
-				"speed-limit-down":         speedDown,
-				"speed-limit-down-enabled": speedDown > 0,
-				"speed-limit-up":           speedUp,
-				"speed-limit-up-enabled":   speedUp > 0,
-				"peer-port":                peerPort,
-				"port-is-open":             true,
-				"dht-enabled":              s.engine != nil && s.engine.DHTEnabled(),
-			},
+// forEach applies an engine action to every torrent selected by "ids".
+func forEach(action func(e *engine.Engine, id int) error) handlerFunc {
+	return func(s *Server, args map[string]any) (map[string]any, error) {
+		sel, err := s.selectTorrents(args)
+		if err != nil {
+			return nil, err
 		}
-
-	case "session-set":
-		if s.engine != nil {
-			if newDir, ok := req.Arguments["download-dir"].(string); ok && newDir != "" {
-				s.engine.DownloadDir = newDir
-			}
-			if downLimit, ok := req.Arguments["speed-limit-down"].(float64); ok {
-				s.engine.SpeedLimitDown = int64(downLimit)
-			}
-			if upLimit, ok := req.Arguments["speed-limit-up"].(float64); ok {
-				s.engine.SpeedLimitUp = int64(upLimit)
-			}
-			_ = s.engine.SaveState()
-		}
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-		}
-
-	case "port-test":
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-			Arguments: map[string]any{
-				"port-is-open": true,
-			},
-		}
-
-	case "torrent-get":
-		torrentsList := []map[string]any{}
-		if s.engine != nil {
-			for _, t := range s.engine.ListTorrents() {
-				st := t.Status()
-				torrentsList = append(torrentsList, map[string]any{
-					"id":                      st.ID,
-					"name":                    st.Name,
-					"hashString":              hex.EncodeToString(st.InfoHash[:]),
-					"status":                  st.State,
-					"totalSize":               st.TotalSize,
-					"percentDone":             st.PercentDone,
-					"metadataPercentComplete": st.MetadataPercentComplete,
-					"leftUntilDone":           st.Left,
-					"peersConnected":          st.ActivePeers,
-					"rateDownload":            0,
-					"rateUpload":              0,
-					"uploadedEver":            st.Uploaded,
-					"downloadedEver":          st.Downloaded,
-					"magnetLink":              st.MagnetURI,
-					"errorString":             st.Error,
-				})
+		for _, t := range sel.torrents {
+			if err := action(s.engine, t.ID); err != nil {
+				return nil, err
 			}
 		}
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-			Arguments: map[string]any{
-				"torrents": torrentsList,
-			},
-		}
-
-	case "torrent-add":
-		return s.torrentAdd(req)
-
-	case "torrent-start", "torrent-start-now":
-		ids := s.parseIDs(req.Arguments)
-		for _, id := range ids {
-			_ = s.engine.StartTorrent(id)
-		}
-		if s.engine != nil {
-			_ = s.engine.SaveState()
-		}
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-		}
-
-	case "torrent-stop":
-		ids := s.parseIDs(req.Arguments)
-		for _, id := range ids {
-			_ = s.engine.StopTorrent(id)
-		}
-		if s.engine != nil {
-			_ = s.engine.SaveState()
-		}
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-		}
-
-	case "torrent-remove":
-		ids := s.parseIDs(req.Arguments)
-		deleteFiles, _ := req.Arguments["delete-local-data"].(bool)
-		for _, id := range ids {
-			_ = s.engine.RemoveTorrent(id, deleteFiles)
-		}
-		if s.engine != nil {
-			_ = s.engine.SaveState()
-		}
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-		}
-
-	case "torrent-set":
-		return Response{
-			Result: "success",
-			Tag:    req.Tag,
-		}
-
-	default:
-		log.Printf("Unknown or unimplemented RPC method: %s", req.Method)
-		return Response{
-			Result: fmt.Sprintf("method '%s' not implemented", req.Method),
-			Tag:    req.Tag,
-		}
+		_ = s.engine.SaveState()
+		return nil, nil
 	}
 }
 
-// torrentAdd implements "torrent-add": "filename" may be a local .torrent path or a magnet URI,
-// and "metainfo" a base64-encoded .torrent. Torrents start immediately unless "paused" is true.
-func (s *Server) torrentAdd(req Request) Response {
-	fail := func(msg string) Response { return Response{Result: msg, Tag: req.Tag} }
-	if s.engine == nil {
-		return fail("engine unavailable")
-	}
+// noQueue accepts queue moves: torrents are never queued (all started torrents run).
+func noQueue(s *Server, args map[string]any) (map[string]any, error) {
+	_, err := s.selectTorrents(args)
+	return nil, err
+}
 
-	filename, _ := req.Arguments["filename"].(string)
-	metainfoB64, _ := req.Arguments["metainfo"].(string)
+func unsupported(*Server, map[string]any) (map[string]any, error) {
+	return nil, fmt.Errorf("method not supported by get-torrent")
+}
 
-	var (
-		t   *engine.ManagedTorrent
-		err error
-	)
-	switch {
-	case strings.HasPrefix(strings.ToLower(filename), "magnet:"):
-		t, err = s.engine.AddMagnet(filename)
-	case filename != "":
-		t, err = s.engine.AddTorrentFile(filename)
-	case metainfoB64 != "":
-		var data []byte
-		data, err = base64.StdEncoding.DecodeString(metainfoB64)
-		if err == nil {
-			t, err = s.engine.AddTorrentBytes(data)
-		}
-	default:
-		return fail("filename or metainfo required")
-	}
+func (s *Server) torrentRemove(args map[string]any) (map[string]any, error) {
+	sel, err := s.selectTorrents(args)
 	if err != nil {
-		return fail(fmt.Sprintf("failed adding torrent: %v", err))
+		return nil, err
 	}
-
-	if paused, _ := req.Arguments["paused"].(bool); !paused {
-		_ = s.engine.StartTorrent(t.ID)
+	deleteFiles, _ := args["delete-local-data"].(bool)
+	for _, t := range sel.torrents {
+		if err := s.engine.RemoveTorrent(t.ID, deleteFiles); err != nil {
+			return nil, err
+		}
 	}
 	_ = s.engine.SaveState()
-
-	st := t.Status()
-	return Response{
-		Result: "success",
-		Tag:    req.Tag,
-		Arguments: map[string]any{
-			"torrent-added": map[string]any{
-				"id":         st.ID,
-				"name":       st.Name,
-				"hashString": hex.EncodeToString(st.InfoHash[:]),
-			},
-		},
-	}
+	return nil, nil
 }
 
-func (s *Server) parseIDs(args map[string]any) []int {
-	if s.engine == nil {
-		return nil
+// torrentSet accepts per-torrent settings. None are supported yet; like Transmission, unknown
+// keys are ignored, but ids must still be valid.
+func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
+	_, err := s.selectTorrents(args)
+	return nil, err
+}
+
+func (s *Server) sessionClose(map[string]any) (map[string]any, error) {
+	if s.opts.OnSessionClose != nil {
+		go s.opts.OnSessionClose()
 	}
+	return nil, nil
+}
+
+// selection is the set of torrents an "ids" argument refers to.
+type selection struct {
+	torrents   []*engine.ManagedTorrent
+	removed    []int
+	recentOnly bool
+}
+
+// selectTorrents resolves "ids": absent (all), a number, "recently-active", a hash string, or a
+// list of numbers and hash strings. Unknown ids are skipped, as in Transmission.
+func (s *Server) selectTorrents(args map[string]any) (selection, error) {
 	raw, exists := args["ids"]
 	if !exists || raw == nil {
-		all := s.engine.ListTorrents()
-		res := make([]int, len(all))
-		for i, t := range all {
-			res[i] = t.ID
-		}
-		return res
+		return selection{torrents: sortedByID(s.engine.ListTorrents())}, nil
 	}
 
+	var items []any
 	switch v := raw.(type) {
-	case float64:
-		return []int{int(v)}
-	case int:
-		return []int{v}
-	case []any:
-		var res []int
-		for _, item := range v {
-			if num, ok := item.(float64); ok {
-				res = append(res, int(num))
-			} else if num, ok := item.(int); ok {
-				res = append(res, num)
-			}
+	case string:
+		if v == "recently-active" || v == "recently_active" {
+			active, removed := s.engine.RecentlyActive()
+			return selection{torrents: sortedByID(active), removed: removed, recentOnly: true}, nil
 		}
-		return res
+		items = []any{v}
+	case float64:
+		items = []any{v}
+	case []any:
+		items = v
 	default:
-		return nil
+		return selection{}, fmt.Errorf("invalid ids argument")
 	}
+
+	seen := make(map[int]bool)
+	var out []*engine.ManagedTorrent
+	for _, item := range items {
+		var t *engine.ManagedTorrent
+		switch v := item.(type) {
+		case float64:
+			t = s.engine.GetTorrentByID(int(v))
+		case string:
+			t = s.engine.TorrentByHashString(v)
+		default:
+			return selection{}, fmt.Errorf("invalid id %v", item)
+		}
+		if t != nil && !seen[t.ID] {
+			seen[t.ID] = true
+			out = append(out, t)
+		}
+	}
+	return selection{torrents: out}, nil
 }
 
 // ListenAndServe runs the HTTP server.

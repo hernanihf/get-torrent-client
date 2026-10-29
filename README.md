@@ -35,15 +35,13 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
 - **Verificación Criptográfica SHA-1**: Validación pieza por pieza antes de persistir a disco y anunciar `have` al enjambre.
 
 ### 🔌 Compatibilidad Transmission RPC
-- **Protección CSRF**: Autenticación mediante token de sesión `X-Transmission-Session-Id` (código HTTP 409 inicial).
-- **Control Total de Torrents**:
-  - `torrent-get`: Estadísticas en tiempo real (progreso, velocidades, peers conectados, tamaños).
-  - `torrent-add`: Carga por ruta local, enlace magnet (`filename`) o `.torrent` en base64 (`metainfo`); inicia automáticamente salvo `"paused": true`.
-  - `torrent-start` / `torrent-start-now`: Reanudación de descargas concurrentes.
-  - `torrent-stop`: Pausa controlada con desconexión ordenada de sockets.
-  - `torrent-remove`: Eliminación de torrents con opción `delete-local-data`.
-  - `session-get` / `session-set`: Configuración de directorios y límites de ancho de banda.
-  - `port-test`: Diagnóstico de conectividad de puerto.
+Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialecto clásico con nombres camelCase/kebab-case), verificado contra `transmission-remote` 4.1.4 real.
+- **Seguridad**: token CSRF `X-Transmission-Session-Id` (HTTP 409), autenticación HTTP Basic opcional y lista blanca del header `Host` contra ataques de *DNS rebinding* (HTTP 421), en el mismo orden que Transmission.
+- **`torrent-get`**: ~70 campos con los nombres exactos del spec (`status`/`error` numéricos, `rateDownload`, `eta`, `files`, `fileStats`, `peers`, `trackerStats`, `pieces`, `availability`, ...), filtro `fields`, formato `table` e `ids` por número, hash o `recently-active` (con `removed`).
+- **`torrent-add`**: ruta local, URL `http(s)`, enlace magnet o `.torrent` en base64 (`metainfo`), `download-dir` por torrent, `paused`, y respuesta `torrent-duplicate` para torrents repetidos.
+- **Ciclo de vida**: `torrent-start`, `torrent-start-now`, `torrent-stop`, `torrent-remove` (con `delete-local-data`), `torrent-verify` (re-chequeo SHA-1 de los datos en disco) y `torrent-reannounce`.
+- **Sesión**: `session-get` (todas las claves, con filtro `fields`), `session-set`, `session-stats` (estadísticas actuales y acumuladas entre reinicios), `free-space`, `port-test` y `session-close` (apagado ordenado).
+- **No soportado aún**: `torrent-set` acepta pero ignora los ajustes por torrent; `torrent-set-location`, `torrent-rename-path`, `blocklist-update` y `group-*` devuelven error; los límites de velocidad se guardan pero todavía no se aplican.
 - **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`.
 
 ---
@@ -109,6 +107,8 @@ Parámetros disponibles:
 - `--port`: Puerto de escucha para conexiones entrantes de peers (TCP) y para la DHT (UDP) (por defecto `6881`).
 - `--dht`: Habilita la DHT (por defecto `true`).
 - `--dht-bootstrap`: Routers de arranque de la DHT separados por comas (por defecto `router.bittorrent.com:6881`, `dht.transmissionbt.com:6881`, ...).
+- `--rpc-username`: Exige autenticación HTTP Basic en el RPC. La contraseña se toma de la variable de entorno `GET_TORRENT_RPC_PASSWORD` (recomendado, no aparece en `ps`) o de `--rpc-password`.
+- `--rpc-host-whitelist`: Nombres de host adicionales permitidos en el header `Host` (las IPs y `localhost` siempre se aceptan; `*.dominio` admite subdominios).
 
 ### 2. Controlar mediante Transmission RPC (`curl`)
 Obtener el token de sesión CSRF y listar torrents:
@@ -125,6 +125,15 @@ curl -s -X POST http://127.0.0.1:9091/transmission/rpc \
 curl -s -X POST http://127.0.0.1:9091/transmission/rpc \
   -H "X-Transmission-Session-Id: $SESSION_ID" \
   -d '{"method":"torrent-add","arguments":{"filename":"/ruta/a/archivo.torrent"}}' | jq
+```
+
+### 3. Usar `transmission-remote`
+```bash
+transmission-remote 127.0.0.1:9091 -a "magnet:?xt=urn:btih:..."   # añadir
+transmission-remote 127.0.0.1:9091 -l                            # listar
+transmission-remote 127.0.0.1:9091 -t 1 -i                       # detalle
+transmission-remote 127.0.0.1:9091 -t 1 --verify                 # re-chequear datos en disco
+transmission-remote 127.0.0.1:9091 --exit                        # apagar el daemon
 ```
 
 También podés conectar directamente cualquier cliente como **Transmission Remote GUI** configurando Host: `127.0.0.1` y Puerto: `9091`.
@@ -144,7 +153,7 @@ Paquetes testeados:
 - `pkg/tracker`: Parseo de peers compactos BEP 0023 y consultas HTTP simuladas en memoria.
 - `pkg/peer`: Handshake BitTorrent de 68 bytes, framing de mensajes y simulación de conexión de sockets con `net.Pipe`.
 - `pkg/storage`: Verificación SHA-1, ensamblado de bloques de 16 KB, escritura multifile y algoritmos Rarest-First y Endgame.
-- `pkg/rpc`: Protección contra CSRF 409 y endpoints de control de torrents.
+- `pkg/rpc`: CSRF, autenticación, lista blanca de `Host`, filtro de campos y formato `table`, selección de `ids`, `torrent-duplicate`, `torrent-verify` con datos corruptos, `session-stats`, `free-space` y `session-close`.
 - `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`) y descarga end-to-end desde un magnet entre dos engines reales.
 - `pkg/peer`, `pkg/metadata`: Mensajes BEP 0010/0009 y ensamblado/verificación de metadatos.
 - `pkg/dht`: KRPC, tabla de ruteo, tokens, paquetes falsificados/malformados, red de 30 nodos en localhost y ausencia de fugas de goroutines; en `pkg/engine`, descarga end-to-end de un magnet sin trackers vía DHT.

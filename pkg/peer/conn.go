@@ -190,6 +190,7 @@ func (c *Conn) SendMessage(msg *Message) error {
 
 // SendInterested sends a MsgInterested (ID 2) to the peer.
 func (c *Conn) SendInterested() error {
+	c.AmInterested = true
 	id := MsgInterested
 	return c.SendMessage(&Message{ID: &id})
 }
@@ -256,6 +257,10 @@ func (c *Conn) UpdateState(msg *Message) {
 		c.Choked = true
 	case MsgUnchoke:
 		c.Choked = false
+	case MsgInterested:
+		c.Interested = true
+	case MsgNotInterested:
+		c.Interested = false
 	case MsgHave:
 		if idx, err := ParseHave(msg); err == nil {
 			// The bitfield may be unsized (no bitfield received, or metadata unknown for magnets).

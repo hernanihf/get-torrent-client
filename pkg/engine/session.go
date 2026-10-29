@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/binary"
+	"errors"
 	"log"
 	"time"
 
@@ -32,6 +33,7 @@ type peerSession struct {
 	e        *Engine
 	t        *ManagedTorrent
 	conn     *peer.Conn
+	info     *peerInfo // reporting record; nil for unregistered connections (tests)
 	addr     string
 	pm       *storage.PieceManager // set once this peer's pieces are counted in availability
 	inflight int
@@ -50,6 +52,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 		addr:     conn.RemotePeer.String(),
 		lastSent: time.Now(),
 		now:      time.Now,
+		info:     t.peerInfoFor(conn),
 	}
 	defer s.detach()
 
@@ -103,7 +106,15 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 			}
 			conn.UpdateState(msg)
 			s.handle(msg)
+			s.publish()
 		}
+	}
+}
+
+// publish exposes the connection's state for reporting (torrent-get "peers").
+func (s *peerSession) publish() {
+	if s.info != nil {
+		s.info.publish(s.conn)
 	}
 }
 
@@ -238,6 +249,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 	if s.inflight > 0 {
 		s.inflight--
 	}
+	s.e.recordDownload(s.t, s.info, len(data))
 
 	// Endgame Mode optimization: cancel redundant requests sent to other peers
 	if peersToCancel := s.pm.GetPeersToCancel(index, begin, s.addr); len(peersToCancel) > 0 {
@@ -247,13 +259,17 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 	completed, err := s.pm.ReceiveBlock(index, begin, data)
 	if err != nil {
 		log.Printf("[Engine] Error processing block: %v", err)
+		if errors.Is(err, storage.ErrPieceCorrupted) && index >= 0 && index < len(s.pm.Pieces) {
+			s.t.mu.Lock()
+			s.t.CorruptEver += int64(s.pm.Pieces[index].Length)
+			s.t.mu.Unlock()
+		}
 	}
 
 	if completed {
 		meta, _, _ := s.t.components()
 		pct, dl := s.pm.Progress()
 		s.t.mu.Lock()
-		s.t.Downloaded = dl
 		s.t.Left = meta.TotalLength - dl
 		s.t.mu.Unlock()
 
@@ -266,7 +282,7 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 		if s.pm.IsComplete() {
 			s.t.mu.Lock()
 			if s.t.State == StateDownloading {
-				s.t.State = StateSeeding
+				s.t.setStateLocked(StateSeeding)
 				log.Printf("[Engine] 🎉 Torrent %q download complete! Seeding now.", meta.Name)
 			}
 			s.t.mu.Unlock()
@@ -288,7 +304,7 @@ func (s *peerSession) handleRequest(msg *peer.Message) {
 	}
 
 	meta, pm, store := s.t.components()
-	if pm == nil || store == nil || reqIdx < 0 || reqIdx >= len(meta.Pieces) || !pm.Bitfield.HasPiece(reqIdx) {
+	if pm == nil || store == nil || reqIdx < 0 || reqIdx >= len(meta.Pieces) || !pm.HasPiece(reqIdx) {
 		return
 	}
 
@@ -303,10 +319,7 @@ func (s *peerSession) handleRequest(msg *peer.Message) {
 	}
 	block := pieceData[reqBegin : reqBegin+reqLen]
 	s.send(peer.FormatPiece(reqIdx, reqBegin, block))
-
-	s.t.mu.Lock()
-	s.t.Uploaded += int64(len(block))
-	s.t.mu.Unlock()
+	s.e.recordUpload(s.t, s.info, len(block))
 }
 
 func idPtr(id peer.MessageID) *peer.MessageID { return &id }

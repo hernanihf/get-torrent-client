@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/hernan/get-torrent/pkg/magnet"
 	"github.com/hernan/get-torrent/pkg/metadata"
@@ -17,6 +18,11 @@ import (
 // AddMagnet registers a torrent from a magnet URI. Its metadata is fetched from peers
 // via BEP 0009 once the torrent is started.
 func (e *Engine) AddMagnet(uri string) (*ManagedTorrent, error) {
+	return e.addMagnet(uri, "")
+}
+
+// addMagnet registers a magnet torrent; dir overrides the session download dir.
+func (e *Engine) addMagnet(uri, dir string) (*ManagedTorrent, error) {
 	m, err := magnet.Parse(uri)
 	if err != nil {
 		return nil, err
@@ -34,14 +40,20 @@ func (e *Engine) AddMagnet(uri string) (*ManagedTorrent, error) {
 		name = hex.EncodeToString(m.InfoHash[:])
 	}
 
+	if dir == "" {
+		dir = e.DownloadDir
+	}
 	t := &ManagedTorrent{
-		ID:        e.nextID,
-		Meta:      &metainfo.TorrentMeta{InfoHash: m.InfoHash, Name: name},
-		MagnetURI: uri,
-		State:     StateQueued,
-		stopChan:  make(chan struct{}),
-		trackers:  m.Trackers,
-		metadata:  metadata.NewAssembler(m.InfoHash),
+		ID:          e.nextID,
+		Meta:        &metainfo.TorrentMeta{InfoHash: m.InfoHash, Name: name},
+		MagnetURI:   uri,
+		State:       StateQueued,
+		DownloadDir: dir,
+		AddedDate:   time.Now(),
+		stopChan:    make(chan struct{}),
+		reannounce:  make(chan struct{}, 1),
+		trackers:    m.Trackers,
+		metadata:    metadata.NewAssembler(m.InfoHash),
 	}
 	e.nextID++
 	e.torrents[m.InfoHash] = t
@@ -104,9 +116,9 @@ func (e *Engine) onMetadata(t *ManagedTorrent, info []byte) error {
 		return err
 	}
 
-	e.mu.RLock()
-	downloadDir := e.DownloadDir
-	e.mu.RUnlock()
+	t.mu.RLock()
+	downloadDir := t.DownloadDir
+	t.mu.RUnlock()
 	store, err := storage.NewStorage(downloadDir, meta)
 	if err != nil {
 		return fmt.Errorf("allocating storage: %w", err)
@@ -127,6 +139,7 @@ func (e *Engine) onMetadata(t *ManagedTorrent, info []byte) error {
 	t.Left = meta.TotalLength
 	t.metadata = nil
 	t.mu.Unlock()
+	e.stats.filesAdded.Add(int64(len(meta.Files)))
 
 	log.Printf("[Engine] Metadata received for %q (%d MB, %d pieces); starting download",
 		meta.Name, meta.TotalLength/(1024*1024), len(meta.Pieces))
