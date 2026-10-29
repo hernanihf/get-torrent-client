@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"log"
@@ -33,7 +34,8 @@ type peerSession struct {
 	e        *Engine
 	t        *ManagedTorrent
 	conn     *peer.Conn
-	info     *peerInfo // reporting record; nil for unregistered connections (tests)
+	info     *peerInfo       // reporting record; nil for unregistered connections (tests)
+	ctx      context.Context // cancelled when the session ends or the torrent stops
 	addr     string
 	pm       *storage.PieceManager // set once this peer's pieces are counted in availability
 	inflight int
@@ -60,6 +62,18 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	stop := t.stopChan
 	t.mu.RUnlock()
 
+	// Bandwidth throttling may block; it must end promptly on stop or disconnect.
+	ctx, cancel := context.WithCancel(e.ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	s.ctx = ctx
+
 	// A dedicated reader goroutine lets the loop below react to stop signals and timers
 	// without abandoning a partially read message.
 	msgs := make(chan *peer.Message)
@@ -77,6 +91,12 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 			case msgs <- msg:
 			case <-done:
 				return
+			}
+			// Download limits: pausing before the next read lets TCP flow control slow the peer.
+			if msg.ID != nil && *msg.ID == peer.MsgPiece && len(msg.Payload) > 8 {
+				if e.throttle(ctx, t, false, len(msg.Payload)-8) != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -318,6 +338,9 @@ func (s *peerSession) handleRequest(msg *peer.Message) {
 		return
 	}
 	block := pieceData[reqBegin : reqBegin+reqLen]
+	if s.ctx != nil && s.e.throttle(s.ctx, s.t, true, len(block)) != nil {
+		return // session ending
+	}
 	s.send(peer.FormatPiece(reqIdx, reqBegin, block))
 	s.e.recordUpload(s.t, s.info, len(block))
 }

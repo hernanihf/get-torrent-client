@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hernan/get-torrent/pkg/bandwidth"
 	"github.com/hernan/get-torrent/pkg/magnet"
 	"github.com/hernan/get-torrent/pkg/metadata"
 	"github.com/hernan/get-torrent/pkg/metainfo"
@@ -52,6 +53,9 @@ func (e *Engine) addMagnet(uri, dir string) (*ManagedTorrent, error) {
 		AddedDate:   time.Now(),
 		stopChan:    make(chan struct{}),
 		reannounce:  make(chan struct{}, 1),
+		limits:      defaultTorrentLimits(),
+		downLimiter: bandwidth.NewLimiter(),
+		upLimiter:   bandwidth.NewLimiter(),
 		trackers:    m.Trackers,
 		metadata:    metadata.NewAssembler(m.InfoHash),
 	}

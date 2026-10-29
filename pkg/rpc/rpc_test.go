@@ -494,3 +494,29 @@ func TestStatusCodes(t *testing.T) {
 		t.Errorf("sitename = %q", s)
 	}
 }
+
+func TestSpeedLimitSettings(t *testing.T) {
+	env := newEnv(t, Options{})
+	torrent, _ := makeTorrent(t, "e.bin", 1000, 16384)
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "paused": true})
+
+	// Defaults match Transmission: per-torrent limits off, 100 KB/s preset, honour session limits.
+	tor := env.torrents(t, map[string]any{"fields": []any{"downloadLimit", "downloadLimited", "uploadLimit", "uploadLimited", "honorsSessionLimits"}})[0]
+	if tor["downloadLimit"] != float64(100) || tor["downloadLimited"] != false || tor["honorsSessionLimits"] != true {
+		t.Errorf("unexpected defaults: %v", tor)
+	}
+
+	env.mustSucceed(t, "torrent-set", map[string]any{"ids": []any{1}, "downloadLimit": 250, "downloadLimited": true,
+		"uploadLimit": 40, "uploadLimited": true, "honorsSessionLimits": false, "unsupportedKey": 1})
+	tor = env.torrents(t, map[string]any{"fields": []any{"downloadLimit", "downloadLimited", "uploadLimit", "uploadLimited", "honorsSessionLimits"}})[0]
+	if tor["downloadLimit"] != float64(250) || tor["downloadLimited"] != true || tor["uploadLimit"] != float64(40) ||
+		tor["uploadLimited"] != true || tor["honorsSessionLimits"] != false {
+		t.Errorf("torrent-set not applied: %v", tor)
+	}
+
+	env.mustSucceed(t, "session-set", map[string]any{"alt-speed-down": 20, "alt-speed-up": 10, "alt-speed-enabled": true})
+	got := env.mustSucceed(t, "session-get", map[string]any{"fields": []any{"alt-speed-down", "alt-speed-up", "alt-speed-enabled"}})
+	if got["alt-speed-down"] != float64(20) || got["alt-speed-up"] != float64(10) || got["alt-speed-enabled"] != true {
+		t.Errorf("alt speed not applied: %v", got)
+	}
+}

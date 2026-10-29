@@ -26,6 +26,22 @@ func TestRateMeter(t *testing.T) {
 	}
 }
 
+func TestRateMeterYoungTransfer(t *testing.T) {
+	var m rateMeter
+	base := time.Unix(2_000_000, 0)
+	if got := m.rate(base); got != 0 {
+		t.Errorf("empty meter must report 0, got %d", got)
+	}
+	m.add(4000, base)
+	if got := m.rate(base); got != 0 {
+		t.Errorf("only a partial second so far: expected 0, got %d", got)
+	}
+	// One complete second of data must read as that second's rate, not be diluted by the window.
+	if got := m.rate(base.Add(time.Second)); got != 4000 {
+		t.Errorf("expected 4000 B/s one second in, got %d", got)
+	}
+}
+
 func TestClientFromPeerID(t *testing.T) {
 	var id [20]byte
 	copy(id[:], "-TR4060-abcdefghijkl")

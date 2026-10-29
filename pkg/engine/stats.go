@@ -11,20 +11,24 @@ import (
 	"github.com/hernan/get-torrent/pkg/storage"
 )
 
-// rateWindow is the averaging window, in seconds, for transfer rates.
-const rateWindow = 5
+// rateWindow is the averaging window, in seconds, for transfer rates (Transmission uses ~2 s).
+const rateWindow = 2
 
 // rateMeter measures a transfer rate over a sliding window of one-second buckets.
 type rateMeter struct {
 	mu      sync.Mutex
 	buckets [rateWindow + 1]int64
 	stamps  [rateWindow + 1]int64 // Unix second each bucket belongs to
+	first   int64                 // Unix second of the first sample, 0 if none
 }
 
 func (m *rateMeter) add(n int, now time.Time) {
 	sec := now.Unix()
 	i := sec % int64(len(m.buckets))
 	m.mu.Lock()
+	if m.first == 0 {
+		m.first = sec
+	}
 	if m.stamps[i] != sec {
 		m.stamps[i] = sec
 		m.buckets[i] = 0
@@ -33,18 +37,27 @@ func (m *rateMeter) add(n int, now time.Time) {
 	m.mu.Unlock()
 }
 
-// rate returns bytes per second averaged over the last rateWindow complete seconds.
+// rate returns bytes per second averaged over the last rateWindow complete seconds, or over
+// the complete seconds since the first sample if that is shorter (so a transfer that just
+// started is not under-reported).
 func (m *rateMeter) rate(now time.Time) int64 {
 	sec := now.Unix()
 	var sum int64
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.first == 0 {
+		return 0
+	}
+	window := min(int64(rateWindow), sec-m.first)
+	if window < 1 {
+		return 0 // only the in-progress second so far
+	}
 	for i, st := range m.stamps {
-		if age := sec - st; age >= 1 && age <= rateWindow {
+		if age := sec - st; age >= 1 && age <= window {
 			sum += m.buckets[i]
 		}
 	}
-	m.mu.Unlock()
-	return sum / rateWindow
+	return sum / window
 }
 
 // PeerSource records how we learnt about a peer (Transmission's "peersFrom").

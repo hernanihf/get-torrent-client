@@ -41,7 +41,8 @@ Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialect
 - **`torrent-add`**: ruta local, URL `http(s)`, enlace magnet o `.torrent` en base64 (`metainfo`), `download-dir` por torrent, `paused`, y respuesta `torrent-duplicate` para torrents repetidos.
 - **Ciclo de vida**: `torrent-start`, `torrent-start-now`, `torrent-stop`, `torrent-remove` (con `delete-local-data`), `torrent-verify` (re-chequeo SHA-1 de los datos en disco) y `torrent-reannounce`.
 - **Sesión**: `session-get` (todas las claves, con filtro `fields`), `session-set`, `session-stats` (estadísticas actuales y acumuladas entre reinicios), `free-space`, `port-test` y `session-close` (apagado ordenado).
-- **No soportado aún**: `torrent-set` acepta pero ignora los ajustes por torrent; `torrent-set-location`, `torrent-rename-path`, `blocklist-update` y `group-*` devuelven error; los límites de velocidad se guardan pero todavía no se aplican.
+- **Límites de velocidad**: límites de sesión (`speed-limit-down/up`), velocidades alternativas o *turtle mode* (`alt-speed-*`) y límites por torrent (`downloadLimit`/`uploadLimit` y `honorsSessionLimits` vía `torrent-set`), en kB/s de 1000 bytes como Transmission. Se aplican con *token buckets*: la subida espera antes de enviar cada bloque y la bajada pausa la lectura del socket para que el control de flujo de TCP frene al peer. Un límite activo de 0 pausa la transferencia.
+- **No soportado aún**: `torrent-set` ignora los ajustes que no son de ancho de banda; `torrent-set-location`, `torrent-rename-path`, `blocklist-update` y `group-*` devuelven error; el horario automático del *turtle mode* (`alt-speed-time-*`) no se aplica.
 - **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`.
 
 ---
@@ -133,6 +134,9 @@ transmission-remote 127.0.0.1:9091 -a "magnet:?xt=urn:btih:..."   # añadir
 transmission-remote 127.0.0.1:9091 -l                            # listar
 transmission-remote 127.0.0.1:9091 -t 1 -i                       # detalle
 transmission-remote 127.0.0.1:9091 -t 1 --verify                 # re-chequear datos en disco
+transmission-remote 127.0.0.1:9091 -d 2000                       # límite de bajada de sesión (kB/s)
+transmission-remote 127.0.0.1:9091 -asd 500 -as                  # turtle mode a 500 kB/s
+transmission-remote 127.0.0.1:9091 -t 1 -u 100                   # límite de subida por torrent
 transmission-remote 127.0.0.1:9091 --exit                        # apagar el daemon
 ```
 
@@ -153,6 +157,7 @@ Paquetes testeados:
 - `pkg/tracker`: Parseo de peers compactos BEP 0023 y consultas HTTP simuladas en memoria.
 - `pkg/peer`: Handshake BitTorrent de 68 bytes, framing de mensajes y simulación de conexión de sockets con `net.Pipe`.
 - `pkg/storage`: Verificación SHA-1, ensamblado de bloques de 16 KB, escritura multifile y algoritmos Rarest-First y Endgame.
+- `pkg/bandwidth`: *token bucket* (tasa, límite 0, cambios en caliente, cancelación); en `pkg/engine`, transferencias reales cronometradas con cada tipo de límite.
 - `pkg/rpc`: CSRF, autenticación, lista blanca de `Host`, filtro de campos y formato `table`, selección de `ids`, `torrent-duplicate`, `torrent-verify` con datos corruptos, `session-stats`, `free-space` y `session-close`.
 - `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`) y descarga end-to-end desde un magnet entre dos engines reales.
 - `pkg/peer`, `pkg/metadata`: Mensajes BEP 0010/0009 y ensamblado/verificación de metadatos.

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hernan/get-torrent/pkg/bandwidth"
 	"github.com/hernan/get-torrent/pkg/dht"
 	"github.com/hernan/get-torrent/pkg/metadata"
 	"github.com/hernan/get-torrent/pkg/metainfo"
@@ -73,6 +74,10 @@ type ManagedTorrent struct {
 	reannounce     chan struct{} // wakes the discovery loop early (torrent-reannounce)
 	recheck        float64       // torrent-verify progress, 0..1
 	restartAfter   bool          // restart once verification finishes
+
+	limits      TorrentLimits
+	downLimiter *bandwidth.Limiter // per-torrent limiters; nil means unlimited
+	upLimiter   *bandwidth.Limiter
 
 	mu sync.RWMutex
 }
@@ -249,11 +254,20 @@ type Engine struct {
 
 	SpeedLimitDownEnabled bool
 	SpeedLimitUpEnabled   bool
-	torrents              map[[20]byte]*ManagedTorrent
-	mu                    sync.RWMutex
-	nextID                int
-	listener              net.Listener
-	listenerStopChan      chan struct{}
+
+	// Alternative ("turtle") speed limits in KB/s, used instead of the above while enabled.
+	AltSpeedDown    int64
+	AltSpeedUp      int64
+	AltSpeedEnabled bool
+
+	// Session-wide limiters, kept in sync with the settings above by applyLimitsLocked.
+	sessionDown      *bandwidth.Limiter
+	sessionUp        *bandwidth.Limiter
+	torrents         map[[20]byte]*ManagedTorrent
+	mu               sync.RWMutex
+	nextID           int
+	listener         net.Listener
+	listenerStopChan chan struct{}
 
 	// DHT is the BEP 0005 node used for trackerless peer discovery; nil when disabled.
 	DHT *dht.Server
@@ -280,6 +294,10 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
+		AltSpeedDown:     50,
+		AltSpeedUp:       50,
+		sessionDown:      bandwidth.NewLimiter(),
+		sessionUp:        bandwidth.NewLimiter(),
 		stats:            sessionStats{started: time.Now()},
 		ctx:              ctx,
 		cancel:           cancel,
@@ -349,6 +367,9 @@ func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path, dir string) (*Managed
 		AddedDate:    time.Now(),
 		stopChan:     make(chan struct{}),
 		reannounce:   make(chan struct{}, 1),
+		limits:       defaultTorrentLimits(),
+		downLimiter:  bandwidth.NewLimiter(),
+		upLimiter:    bandwidth.NewLimiter(),
 	}
 	e.nextID++
 	e.torrents[meta.InfoHash] = t

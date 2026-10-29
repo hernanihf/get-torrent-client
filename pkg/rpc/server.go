@@ -282,11 +282,37 @@ func (s *Server) torrentRemove(args map[string]any) (map[string]any, error) {
 	return nil, nil
 }
 
-// torrentSet accepts per-torrent settings. None are supported yet; like Transmission, unknown
-// keys are ignored, but ids must still be valid.
+// torrentSet applies per-torrent bandwidth limits. Like Transmission, keys it does not support
+// are ignored, but ids must still be valid.
 func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
-	_, err := s.selectTorrents(args)
-	return nil, err
+	sel, err := s.selectTorrents(args)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range sel.torrents {
+		err := s.engine.SetTorrentLimits(t.ID, func(l *engine.TorrentLimits) {
+			if v, ok := args["downloadLimit"].(float64); ok {
+				l.DownloadLimit = int64(v)
+			}
+			if v, ok := args["downloadLimited"].(bool); ok {
+				l.DownloadLimited = v
+			}
+			if v, ok := args["uploadLimit"].(float64); ok {
+				l.UploadLimit = int64(v)
+			}
+			if v, ok := args["uploadLimited"].(bool); ok {
+				l.UploadLimited = v
+			}
+			if v, ok := args["honorsSessionLimits"].(bool); ok {
+				l.HonorsSessionLimits = v
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	_ = s.engine.SaveState()
+	return nil, nil
 }
 
 func (s *Server) sessionClose(map[string]any) (map[string]any, error) {

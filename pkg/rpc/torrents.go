@@ -118,8 +118,8 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"doneDate":        func(c *fieldCtx) any { return c.st.DoneDate },
 	"downloadDir":     func(c *fieldCtx) any { return c.st.DownloadDir },
 	"downloadedEver":  func(c *fieldCtx) any { return c.st.Downloaded },
-	"downloadLimit":   func(c *fieldCtx) any { return 0 },
-	"downloadLimited": func(c *fieldCtx) any { return false },
+	"downloadLimit":   func(c *fieldCtx) any { return c.t.Limits().DownloadLimit },
+	"downloadLimited": func(c *fieldCtx) any { return c.t.Limits().DownloadLimited },
 	"editDate":        func(c *fieldCtx) any { return 0 },
 	"error":           func(c *fieldCtx) any { return c.st.ErrorKind },
 	"errorString":     func(c *fieldCtx) any { return c.st.Error },
@@ -155,7 +155,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"hashString":          func(c *fieldCtx) any { return hex.EncodeToString(c.st.InfoHash[:]) },
 	"haveUnchecked":       func(c *fieldCtx) any { return 0 },
 	"haveValid":           func(c *fieldCtx) any { return c.st.HaveValid },
-	"honorsSessionLimits": func(c *fieldCtx) any { return true },
+	"honorsSessionLimits": func(c *fieldCtx) any { return c.t.Limits().HonorsSessionLimits },
 	"id":                  func(c *fieldCtx) any { return c.st.ID },
 	"isFinished":          func(c *fieldCtx) any { return false }, // no seed ratio/idle limits yet
 	"isPrivate":           func(c *fieldCtx) any { return c.st.Private },
@@ -301,8 +301,8 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"totalSize":     func(c *fieldCtx) any { return c.st.TotalSize },
 	"torrentFile":   func(c *fieldCtx) any { return c.st.TorrentFile },
 	"uploadedEver":  func(c *fieldCtx) any { return c.st.Uploaded },
-	"uploadLimit":   func(c *fieldCtx) any { return 0 },
-	"uploadLimited": func(c *fieldCtx) any { return false },
+	"uploadLimit":   func(c *fieldCtx) any { return c.t.Limits().UploadLimit },
+	"uploadLimited": func(c *fieldCtx) any { return c.t.Limits().UploadLimited },
 	"uploadRatio": func(c *fieldCtx) any {
 		// Transmission divides by downloadedEver, falling back to verified data (e.g. seeding
 		// a torrent whose data was already present).

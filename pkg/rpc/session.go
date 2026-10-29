@@ -28,13 +28,13 @@ func (s *Server) sessionGet(args map[string]any) (map[string]any, error) {
 	s.mu.RUnlock()
 
 	all := map[string]any{
-		"alt-speed-down":                       50,
-		"alt-speed-enabled":                    false,
+		"alt-speed-down":                       settings.AltSpeedDown,
+		"alt-speed-enabled":                    settings.AltSpeedEnabled,
 		"alt-speed-time-begin":                 540,
 		"alt-speed-time-day":                   127,
 		"alt-speed-time-enabled":               false,
 		"alt-speed-time-end":                   1020,
-		"alt-speed-up":                         50,
+		"alt-speed-up":                         settings.AltSpeedUp,
 		"blocklist-enabled":                    false,
 		"blocklist-size":                       0,
 		"blocklist-url":                        "",
@@ -126,6 +126,15 @@ func (s *Server) sessionSet(args map[string]any) (map[string]any, error) {
 		}
 		if v, ok := args["speed-limit-up-enabled"].(bool); ok {
 			st.SpeedLimitUpEnabled = v
+		}
+		if v, ok := args["alt-speed-down"].(float64); ok {
+			st.AltSpeedDown = int64(v)
+		}
+		if v, ok := args["alt-speed-up"].(float64); ok {
+			st.AltSpeedUp = int64(v)
+		}
+		if v, ok := args["alt-speed-enabled"].(bool); ok {
+			st.AltSpeedEnabled = v
 		}
 	})
 	_ = s.engine.SaveState()
