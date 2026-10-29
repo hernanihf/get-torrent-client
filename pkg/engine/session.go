@@ -29,7 +29,8 @@ const (
 )
 
 // peerSession holds the per-connection state of the message loop. Only the goroutine running
-// handlePeerMessages touches it (and the Conn's state fields), so no locking is needed.
+// handlePeerMessages touches it (and the Conn's state fields), so no locking is needed; the
+// exception is uploads, which the uploader goroutine shares and which locks itself.
 type peerSession struct {
 	e        *Engine
 	t        *ManagedTorrent
@@ -39,7 +40,8 @@ type peerSession struct {
 	addr     string
 	pm       *storage.PieceManager // set once this peer's pieces are counted in availability
 	inflight int
-	extDone  bool // peer's extension handshake has been processed
+	extDone  bool         // peer's extension handshake has been processed
+	uploads  *uploadQueue // shared with the uploader goroutine
 	lastSent time.Time
 	now      func() time.Time
 }
@@ -55,6 +57,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 		lastSent: time.Now(),
 		now:      time.Now,
 		info:     t.peerInfoFor(conn),
+		uploads:  newUploadQueue(),
 	}
 	defer s.detach()
 
@@ -77,6 +80,7 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 		}
 	}()
 	s.ctx = ctx
+	go s.runUploader(ctx)
 
 	// A dedicated reader goroutine lets the loop below react to stop signals and timers
 	// without abandoning a partially read message.
@@ -254,6 +258,9 @@ func (s *peerSession) handle(msg *peer.Message) {
 	case peer.MsgRequest:
 		s.handleRequest(msg)
 
+	case peer.MsgCancel:
+		s.handleCancel(msg)
+
 	case peer.MsgPort:
 		if port, err := peer.ParsePort(msg); err == nil {
 			s.e.addDHTNode(s.conn.RemotePeer.IP, port)
@@ -327,37 +334,24 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 	s.requestBlocks()
 }
 
-// handleRequest serves a block to a peer we have unchoked (seeding).
+// handleRequest queues a block request from a peer we have unchoked; the uploader serves it.
 func (s *peerSession) handleRequest(msg *peer.Message) {
 	reqIdx, reqBegin, reqLen, err := peer.ParseRequest(msg)
 	if err != nil || s.conn.AmChoking {
 		return
 	}
 	// Requests larger than 128 KiB are a protocol violation and a memory-abuse vector.
-	if reqLen <= 0 || reqLen > 128*1024 || reqBegin < 0 {
+	if reqLen <= 0 || reqLen > 128*1024 || reqBegin < 0 || reqIdx < 0 {
 		return
 	}
+	s.uploads.push(blockRequest{index: reqIdx, begin: reqBegin, length: reqLen})
+}
 
-	meta, pm, store := s.t.components()
-	if pm == nil || store == nil || reqIdx < 0 || reqIdx >= len(meta.Pieces) || !pm.HasPiece(reqIdx) {
-		return
+// handleCancel withdraws a request the peer no longer needs (typically in its endgame).
+func (s *peerSession) handleCancel(msg *peer.Message) {
+	if idx, begin, length, err := peer.ParseCancel(msg); err == nil {
+		s.uploads.cancel(blockRequest{index: idx, begin: begin, length: length})
 	}
-
-	pieceLen := int(meta.PieceLength)
-	if reqIdx == len(meta.Pieces)-1 && meta.TotalLength%meta.PieceLength != 0 {
-		pieceLen = int(meta.TotalLength % meta.PieceLength)
-	}
-
-	pieceData, err := store.ReadPiece(reqIdx, pieceLen)
-	if err != nil || reqBegin+reqLen > len(pieceData) {
-		return
-	}
-	block := pieceData[reqBegin : reqBegin+reqLen]
-	if s.ctx != nil && s.e.throttle(s.ctx, s.t, true, len(block)) != nil {
-		return // session ending
-	}
-	s.send(peer.FormatPiece(reqIdx, reqBegin, block))
-	s.e.recordUpload(s.t, s.info, len(block))
 }
 
 func idPtr(id peer.MessageID) *peer.MessageID { return &id }

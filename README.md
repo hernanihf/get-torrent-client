@@ -30,6 +30,7 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
 - **Modo Endgame**: Al acercarse al 100%, solicita los últimos bloques a todos los peers disponibles en paralelo y envía ráfagas de `MsgCancel` en cuanto llega el primero para evitar cuellos de botella.
 - **Subida & Seeding**: Responde a peticiones entrantes `request`, lee fragmentos desde disco y sirve bloques a peers interesados con desestrangulamiento (*unchoking*).
 - **Algoritmo de *choking* (BEP 0003)**: Cada 10 s se desestrangula a los 4 peers interesados con mejor tasa (*tit-for-tat*: la que nos envían al descargar, la que les enviamos al sembrar) más 1 *optimistic unchoke* que rota cada 30 s, con el triple de probabilidad para peers recién conectados. Los cambios de interés y las desconexiones re-evalúan los slots de inmediato; las peticiones de peers estrangulados se ignoran.
+- **Cola de subida por peer**: Las peticiones `request` se encolan (hasta 250, anunciado como `reqq`) y las sirve una goroutine aparte, de modo que un `cancel` del peer (típico en su *endgame*) retira el bloque aunque esté esperando ancho de banda, y estrangular al peer descarta su cola (BEP 0003).
 
 ### 💾 Almacenamiento e Integridad
 - **Soporte Single-File y Multi-File**: Reconstrucción de jerarquías de carpetas complejas.

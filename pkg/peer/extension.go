@@ -54,12 +54,17 @@ func FormatExtended(extID uint8, payload []byte) *Message {
 	return &Message{ID: &id, Payload: buf}
 }
 
+// MaxRequestQueue is the number of outstanding block requests we accept from one peer,
+// advertised as "reqq".
+const MaxRequestQueue = 250
+
 // FormatExtHandshake builds our extension handshake advertising ut_metadata.
 // metadataSize is omitted when zero (we do not yet have the info dictionary).
 func FormatExtHandshake(metadataSize int) *Message {
 	dict := map[string]any{
-		"m": map[string]any{ExtUTMetadata: int(LocalUTMetadataID)},
-		"v": "get-torrent 0.0.1",
+		"m":    map[string]any{ExtUTMetadata: int(LocalUTMetadataID)},
+		"v":    "get-torrent 0.0.1",
+		"reqq": MaxRequestQueue,
 	}
 	if metadataSize > 0 {
 		dict["metadata_size"] = metadataSize

@@ -165,7 +165,8 @@ func (pi *peerInfo) setChoke(choke bool) {
 }
 
 // applyChoke chokes or unchokes the peer as the choker decided. A peer we choke discards the
-// requests it has pending with us (BEP 0003), and handleRequest ignores any that still arrive.
+// requests it has pending with us (BEP 0003), so the upload queue is dropped, and handleRequest
+// ignores any that still arrive.
 func (s *peerSession) applyChoke(choke bool) {
 	if choke == s.conn.AmChoking {
 		return
@@ -173,6 +174,9 @@ func (s *peerSession) applyChoke(choke bool) {
 	id := peer.MsgUnchoke
 	if choke {
 		id = peer.MsgChoke
+	}
+	if choke && s.uploads != nil {
+		s.uploads.clear()
 	}
 	s.send(&peer.Message{ID: idPtr(id)})
 	s.conn.AmChoking = choke
