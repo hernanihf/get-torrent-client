@@ -283,11 +283,15 @@ func (s *Server) torrentRemove(args map[string]any) (map[string]any, error) {
 	return nil, nil
 }
 
-// torrentSet applies per-torrent bandwidth limits and file selection. Like Transmission, keys it
-// does not support are ignored, but ids must still be valid.
+// torrentSet applies per-torrent bandwidth limits, seeding limits and file selection. Changes to
+// settings get-torrent does not implement are rejected before anything is applied; unknown keys
+// are ignored, as in Transmission, but ids must still be valid.
 func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
 	sel, err := s.selectTorrents(args)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.rejectUnsupportedTorrentKeys(args, sel.torrents); err != nil {
 		return nil, err
 	}
 	for _, key := range []string{"seedRatioMode", "seedIdleMode"} {

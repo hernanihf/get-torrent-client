@@ -440,11 +440,7 @@ func (s *Server) torrentGet(args map[string]any) (map[string]any, error) {
 		}
 	}
 
-	// Queue position follows ID order across all torrents.
-	queuePos := make(map[int]int)
-	for i, t := range sortedByID(s.engine.ListTorrents()) {
-		queuePos[t.ID] = i
-	}
+	queuePos := s.queuePositions()
 
 	table, _ := args["format"].(string)
 	var objects []map[string]any
@@ -493,6 +489,90 @@ func (s *Server) torrentGet(args map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
+// queuePositions maps torrent IDs to queue positions, which follow ID order across all torrents.
+func (s *Server) queuePositions() map[int]int {
+	queuePos := make(map[int]int)
+	for i, t := range sortedByID(s.engine.ListTorrents()) {
+		queuePos[t.ID] = i
+	}
+	return queuePos
+}
+
+// unsupportedTorrentKeys maps torrent-set/torrent-add arguments get-torrent does not implement
+// to the torrent-get field reporting their effective value ("" when there is none: any
+// non-empty value is a change).
+var unsupportedTorrentKeys = map[string]string{
+	"bandwidthPriority": "bandwidthPriority",
+	"group":             "group",
+	"labels":            "labels",
+	"location":          "downloadDir",
+	"peer-limit":        "maxConnectedPeers",
+	"queuePosition":     "queuePosition",
+	"trackerList":       "trackerList",
+	"trackerAdd":        "",
+	"trackerRemove":     "",
+	"trackerReplace":    "",
+	"cookies":           "",
+}
+
+// rejectUnsupportedTorrentKeys fails if args would change, for any of torrents, a setting
+// get-torrent does not implement. Repeating the reported value, or an empty value, is accepted,
+// as for session-set. A nil torrent stands for one being added (defaults apply).
+func (s *Server) rejectUnsupportedTorrentKeys(args map[string]any, torrents []*engine.ManagedTorrent) error {
+	queuePos := s.queuePositions()
+	var bad []string
+	for key, field := range unsupportedTorrentKeys {
+		if v, ok := args[key]; ok && !isEmptyArg(v) && !s.matchesReported(key, field, v, torrents, queuePos) {
+			bad = append(bad, key)
+		}
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf("unsupported torrent settings: %s", strings.Join(bad, ", "))
+	}
+	return nil
+}
+
+// matchesReported reports whether v equals what every torrent reports for an unsupported key.
+func (s *Server) matchesReported(key, field string, v any, torrents []*engine.ManagedTorrent, queuePos map[int]int) bool {
+	if field == "" {
+		return false
+	}
+	for _, t := range torrents {
+		var reported any
+		if t == nil {
+			def, ok := torrentAddDefaults[key]
+			if !ok {
+				return false
+			}
+			reported = def
+		} else {
+			reported = torrentFields[field](&fieldCtx{e: s.engine, t: t, st: t.Status(), queuePos: queuePos[t.ID]})
+		}
+		if !sameValue(v, reported) {
+			return false
+		}
+	}
+	return true
+}
+
+// torrentAddDefaults are the values a new torrent reports for unsupported torrent-add keys.
+var torrentAddDefaults = map[string]any{
+	"bandwidthPriority": 0,
+	"peer-limit":        engine.MaxPeersPerTorrent,
+}
+
+// isEmptyArg reports whether v is an empty string or list, which sets nothing.
+func isEmptyArg(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return x == ""
+	case []any:
+		return len(x) == 0
+	}
+	return false
+}
+
 // torrentAdd implements "torrent-add": "filename" may be a local .torrent path, an http(s) URL
 // or a magnet URI, and "metainfo" a base64-encoded .torrent. Torrents start immediately unless
 // "paused" is true. Re-adding an existing torrent reports "torrent-duplicate".
@@ -509,6 +589,9 @@ func (s *Server) torrentAdd(args map[string]any) (map[string]any, error) {
 	}
 	if req.Filename == "" && len(req.Metainfo) == 0 {
 		return nil, fmt.Errorf("no filename or metainfo specified")
+	}
+	if err := s.rejectUnsupportedTorrentKeys(args, []*engine.ManagedTorrent{nil}); err != nil {
+		return nil, err
 	}
 
 	t, added, err := s.engine.Add(req)

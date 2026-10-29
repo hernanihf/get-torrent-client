@@ -78,3 +78,37 @@ func TestSeedLimitSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestTorrentSetRejectsUnsupportedChanges(t *testing.T) {
+	env := newEnv(t, Options{})
+	torrent, _ := makeTorrent(t, "u.bin", 1000, 16384)
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "paused": true})
+
+	r := env.call(t, "torrent-set", map[string]any{"ids": []any{1}, "labels": []any{"tv"}, "peer-limit": 10, "trackerAdd": []any{"http://x/announce"}, "downloadLimit": 77})
+	if r.Result == "success" || !strings.Contains(r.Result, "labels, peer-limit, trackerAdd") {
+		t.Errorf("expected the unsupported keys to be named, got %q", r.Result)
+	}
+	if lim := env.torrents(t, map[string]any{"fields": []any{"downloadLimit"}})[0]["downloadLimit"]; lim == float64(77) {
+		t.Errorf("nothing may be applied when a key is rejected")
+	}
+
+	// Values equal to what torrent-get reports, and empty lists, change nothing and are fine.
+	cur := env.torrents(t, map[string]any{"fields": []any{"maxConnectedPeers", "bandwidthPriority", "queuePosition", "trackerList"}})[0]
+	env.mustSucceed(t, "torrent-set", map[string]any{
+		"ids": []any{1}, "peer-limit": cur["maxConnectedPeers"], "bandwidthPriority": cur["bandwidthPriority"],
+		"queuePosition": cur["queuePosition"], "trackerList": cur["trackerList"], "labels": []any{}, "trackerAdd": []any{},
+		"downloadLimit": 77,
+	})
+}
+
+func TestTorrentAddRejectsUnsupportedArguments(t *testing.T) {
+	env := newEnv(t, Options{})
+	torrent, _ := makeTorrent(t, "a.bin", 1000, 16384)
+	if r := env.call(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "bandwidthPriority": 1}); r.Result == "success" {
+		t.Error("a non-default bandwidthPriority must be rejected")
+	}
+	if got := env.torrents(t, map[string]any{"fields": []any{"id"}}); len(got) != 0 {
+		t.Errorf("a rejected torrent-add must not add the torrent: %v", got)
+	}
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "paused": true, "bandwidthPriority": 0, "labels": []any{}, "cookies": ""})
+}
