@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hernan/get-torrent/pkg/metainfo"
+	"github.com/hernan/get-torrent/pkg/storage"
 )
 
 // TorrentStateEntry records persistent resume data for a torrent.
@@ -27,6 +28,12 @@ type TorrentStateEntry struct {
 	AddedDate   int64          `json:"added_date,omitempty"`
 	DoneDate    int64          `json:"done_date,omitempty"`
 	Limits      *TorrentLimits `json:"limits,omitempty"`
+
+	// Pieces is the verified-piece bitfield and Files the stamps of the data files it describes.
+	// On load the bitfield is trusted only if every file still matches its stamp; otherwise the
+	// data is rehashed. Both are omitted while a check is running, forcing a recheck.
+	Pieces []byte              `json:"pieces,omitempty"`
+	Files  []storage.FileStamp `json:"files,omitempty"`
 }
 
 // EngineState captures global session settings and active torrent states.
@@ -45,6 +52,9 @@ type EngineState struct {
 
 // SaveState serializes the current session and torrent states to state.json.
 func (e *Engine) SaveState() error {
+	e.saveMu.Lock()
+	defer e.saveMu.Unlock()
+
 	if err := e.saveDHTState(); err != nil {
 		log.Printf("[Engine] Saving DHT state: %v", err)
 	}
@@ -78,12 +88,21 @@ func (e *Engine) SaveState() error {
 	for _, t := range e.torrents {
 		t.mu.RLock()
 		limits := t.limits
-		state.Torrents = append(state.Torrents, TorrentStateEntry{
+		pm, store := t.PieceManager, t.Storage
+		saved := t.State
+		if saved == StateChecking {
+			// Persist what the torrent will do once the check finishes; it is rechecked on load.
+			saved = StateStopped
+			if t.restartAfter {
+				saved = StateDownloading
+			}
+		}
+		entry := TorrentStateEntry{
 			ID:          t.ID,
 			InfoHashHex: hex.EncodeToString(t.Meta.InfoHash[:]),
 			TorrentPath: t.TorrentPath,
 			MagnetURI:   t.MagnetURI,
-			State:       t.State,
+			State:       saved,
 			Downloaded:  t.Downloaded,
 			Uploaded:    t.Uploaded,
 			CorruptEver: t.CorruptEver,
@@ -91,8 +110,19 @@ func (e *Engine) SaveState() error {
 			AddedDate:   unix(t.AddedDate),
 			DoneDate:    unix(t.DoneDate),
 			Limits:      &limits,
-		})
+		}
+		if pm != nil && t.State != StateChecking {
+			// Stamp the files after snapshotting the bitfield: a piece is set only once it is
+			// written, so any write racing with the save leaves a newer mtime and a recheck.
+			entry.Pieces = pm.Snapshot().Have
+			if files, err := store.FileStamps(); err == nil {
+				entry.Files = files
+			} else {
+				entry.Pieces = nil
+			}
+		}
 		t.mu.RUnlock()
+		state.Torrents = append(state.Torrents, entry)
 	}
 
 	// Restore in ID order so torrents keep their relative order across restarts.
@@ -115,6 +145,33 @@ func (e *Engine) SaveState() error {
 	}
 
 	return nil
+}
+
+// StartAutoSave saves state every interval until Close, so a crash loses at most that much
+// session history and resume data. A non-positive interval disables it.
+func (e *Engine) StartAutoSave(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	e.bg.Add(1)
+	go func() {
+		defer e.bg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-ticker.C:
+				if e.ctx.Err() != nil {
+					return
+				}
+				if err := e.SaveState(); err != nil {
+					log.Printf("[Engine] Periodic state save failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 // LoadState restores saved session settings and re-registers torrents from state.json.
@@ -191,12 +248,25 @@ func (e *Engine) LoadState() error {
 			t.limits = *entry.Limits
 			t.applyLimits(t.limits)
 		}
-		switch entry.State {
-		case StateDownloading, StateSeeding:
+		run := entry.State == StateDownloading || entry.State == StateSeeding
+		if pm, store := t.PieceManager, t.Storage; pm != nil {
+			if !resumeValid(entry, len(t.Meta.Pieces), store) {
+				// No trustworthy resume data: rehash the data on disk before resuming instead of
+				// downloading everything again, like Transmission does.
+				t.mu.Unlock()
+				e.startVerify(t, run)
+				continue
+			}
+			pm.SetVerified(entry.Pieces)
+			_, done := pm.Progress()
+			t.Left = t.Meta.TotalLength - done
+		}
+		switch {
+		case run:
 			t.mu.Unlock()
 			_ = e.StartTorrent(t.ID)
-		case StateChecking:
-			t.State = StateStopped // interrupted verification
+		case entry.State == StateChecking:
+			t.State = StateStopped // interrupted verification (older state files)
 			t.mu.Unlock()
 		default:
 			t.State = entry.State
@@ -206,6 +276,27 @@ func (e *Engine) LoadState() error {
 
 	log.Printf("[Engine] Loaded state: %d torrents restored from %s", len(state.Torrents), stateFile)
 	return nil
+}
+
+// resumeValid reports whether a saved bitfield can be trusted: it must fit the torrent and every
+// data file must still have the size and modification time it had when the state was saved.
+func resumeValid(entry TorrentStateEntry, numPieces int, store *storage.Storage) bool {
+	if len(entry.Pieces) != (numPieces+7)/8 {
+		return false
+	}
+	if spare := numPieces % 8; spare != 0 && entry.Pieces[len(entry.Pieces)-1]&(0xFF>>spare) != 0 {
+		return false // bits set past the last piece
+	}
+	current, err := store.FileStamps()
+	if err != nil || len(current) != len(entry.Files) {
+		return false
+	}
+	for i := range current {
+		if current[i] != entry.Files[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Settings are the mutable session-wide options exposed through RPC session-get/session-set.

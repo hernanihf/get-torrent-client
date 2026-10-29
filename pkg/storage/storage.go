@@ -66,10 +66,18 @@ func NewStorage(downloadDir string, meta *metainfo.TorrentMeta) (*Storage, error
 			return nil, fmt.Errorf("opening file %s: %w", fullPath, err)
 		}
 
-		// Pre-truncate file to required length
-		if err := handle.Truncate(f.Length); err != nil {
+		// Pre-truncate file to required length. Files already the right size are left alone:
+		// truncating bumps the modification time, which resume data uses to detect changes.
+		info, err := handle.Stat()
+		if err != nil {
 			_ = handle.Close()
-			return nil, fmt.Errorf("pre-allocating file %s to %d bytes: %w", fullPath, f.Length, err)
+			return nil, fmt.Errorf("stat %s: %w", fullPath, err)
+		}
+		if info.Size() != f.Length {
+			if err := handle.Truncate(f.Length); err != nil {
+				_ = handle.Close()
+				return nil, fmt.Errorf("pre-allocating file %s to %d bytes: %w", fullPath, f.Length, err)
+			}
 		}
 
 		files = append(files, FileEntry{
@@ -181,6 +189,28 @@ func (s *Storage) ReadPiece(index int, length int) ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+// FileStamp identifies the on-disk version of a file for resume data: if size or modification
+// time differ from the saved stamp, the file may have changed and must be rechecked.
+type FileStamp struct {
+	Size    int64 `json:"size"`
+	ModTime int64 `json:"mtime"` // Unix nanoseconds
+}
+
+// FileStamps returns the current stamp of every file, in torrent order.
+func (s *Storage) FileStamps() ([]FileStamp, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stamps := make([]FileStamp, len(s.Files))
+	for i, f := range s.Files {
+		info, err := os.Stat(f.FullPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", f.FullPath, err)
+		}
+		stamps[i] = FileStamp{Size: info.Size(), ModTime: info.ModTime().UnixNano()}
+	}
+	return stamps, nil
 }
 
 // Close closes all open file handles.

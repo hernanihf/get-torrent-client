@@ -278,6 +278,11 @@ type Engine struct {
 	stats      sessionStats
 	cumulative CumulativeStats // totals from previous sessions (state.json)
 	removed    []removedTorrent
+
+	verifySem chan struct{} // held by the one torrent currently hashing its data
+
+	saveMu sync.Mutex     // serializes SaveState (periodic and shutdown saves share the files)
+	bg     sync.WaitGroup // background loops that Close waits for before stopping torrents
 }
 
 // removedTorrent remembers a removal for torrent-get's "recently-active" ids.
@@ -308,6 +313,7 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 		torrents:         make(map[[20]byte]*ManagedTorrent),
 		nextID:           1,
 		listenerStopChan: make(chan struct{}),
+		verifySem:        make(chan struct{}, 1),
 	}
 }
 
@@ -876,6 +882,8 @@ func (e *Engine) ListTorrents() []*ManagedTorrent {
 func (e *Engine) Close() error {
 	var errs []error
 	e.cancel()
+	// Let an in-flight periodic save finish first, so it cannot persist torrents as stopped.
+	e.bg.Wait()
 	if err := e.StopListener(); err != nil {
 		errs = append(errs, err)
 	}

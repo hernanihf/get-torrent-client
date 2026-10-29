@@ -173,8 +173,7 @@ func (e *Engine) VerifyTorrent(id int) error {
 	if t == nil {
 		return fmt.Errorf("torrent with id %d not found", id)
 	}
-	meta, pm, store := t.components()
-	if pm == nil {
+	if _, pm, _ := t.components(); pm == nil {
 		return nil // Nothing on disk yet (magnet without metadata)
 	}
 
@@ -188,16 +187,36 @@ func (e *Engine) VerifyTorrent(id int) error {
 	if wasRunning {
 		_ = e.StopTorrent(id)
 	}
+	e.startVerify(t, wasRunning)
+	return nil
+}
+
+// startVerify puts a torrent with metadata into StateChecking and hashes its data in the
+// background, starting it afterwards if restart is set. Checks run one at a time, like
+// Transmission's verify queue, so restoring many torrents at startup does not thrash the disk;
+// torrents waiting their turn report StateChecking with zero progress.
+func (e *Engine) startVerify(t *ManagedTorrent, restart bool) {
+	meta, pm, store := t.components()
 
 	t.mu.Lock()
 	t.setStateLocked(StateChecking)
 	t.recheck = 0
-	t.restartAfter = wasRunning
+	t.restartAfter = restart
 	t.mu.Unlock()
 
 	go func() {
+		select {
+		case e.verifySem <- struct{}{}:
+		case <-e.ctx.Done():
+			return
+		}
+		defer func() { <-e.verifySem }()
+
 		have := make([]byte, (len(meta.Pieces)+7)/8)
 		for i, hash := range meta.Pieces {
+			if e.ctx.Err() != nil {
+				return // engine closing; state was already saved
+			}
 			length := meta.PieceLength
 			if i == len(meta.Pieces)-1 {
 				length = meta.TotalLength - int64(i)*meta.PieceLength
@@ -221,10 +240,9 @@ func (e *Engine) VerifyTorrent(id int) error {
 		t.mu.Unlock()
 
 		if restart {
-			_ = e.StartTorrent(id)
+			_ = e.StartTorrent(t.ID)
 		}
 	}()
-	return nil
 }
 
 // FreeSpace reports free and total bytes on the filesystem holding path.

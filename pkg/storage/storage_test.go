@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hernan/get-torrent/pkg/metainfo"
 	"github.com/hernan/get-torrent/pkg/peer"
@@ -320,5 +321,50 @@ func TestEndgameAndCancelTracking(t *testing.T) {
 	toCancel := pm.GetPeersToCancel(0, 0, "1.1.1.1:6881")
 	if len(toCancel) != 1 || toCancel[0] != "2.2.2.2:6881" {
 		t.Errorf("expected Peer B to be canceled, got %v", toCancel)
+	}
+}
+
+func TestReopenKeepsFileStamps(t *testing.T) {
+	dir := t.TempDir()
+	meta := &metainfo.TorrentMeta{
+		Name:        "album",
+		PieceLength: 16384,
+		TotalLength: 30000,
+		Pieces:      make([][20]byte, 2),
+		Files: []metainfo.FileInfo{
+			{Length: 10000, Path: []string{"a.bin"}},
+			{Length: 20000, Path: []string{"b.bin"}},
+		},
+	}
+	first, err := NewStorage(dir, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Backdate the files so a truncate on reopen would visibly move the mtime.
+	past := time.Now().Add(-time.Hour)
+	for _, f := range first.Files {
+		if err := os.Chtimes(f.FullPath, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := first.FileStamps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+
+	second, err := NewStorage(dir, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	after, err := second.FileStamps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range before {
+		if before[i] != after[i] || after[i].Size != meta.Files[i].Length {
+			t.Errorf("file %d: stamp changed on reopen: %+v -> %+v", i, before[i], after[i])
+		}
 	}
 }

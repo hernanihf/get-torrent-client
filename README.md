@@ -43,7 +43,7 @@ Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialect
 - **Sesión**: `session-get` (todas las claves, con filtro `fields`), `session-set`, `session-stats` (estadísticas actuales y acumuladas entre reinicios), `free-space`, `port-test` y `session-close` (apagado ordenado).
 - **Límites de velocidad**: límites de sesión (`speed-limit-down/up`), velocidades alternativas o *turtle mode* (`alt-speed-*`) y límites por torrent (`downloadLimit`/`uploadLimit` y `honorsSessionLimits` vía `torrent-set`), en kB/s de 1000 bytes como Transmission. Se aplican con *token buckets*: la subida espera antes de enviar cada bloque y la bajada pausa la lectura del socket para que el control de flujo de TCP frene al peer. Un límite activo de 0 pausa la transferencia.
 - **No soportado aún**: `torrent-set` ignora los ajustes que no son de ancho de banda; `torrent-set-location`, `torrent-rename-path`, `blocklist-update` y `group-*` devuelven error; el horario automático del *turtle mode* (`alt-speed-time-*`) no se aplica.
-- **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`.
+- **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`. Cada torrent guarda su *bitfield* de piezas verificadas junto con el tamaño y la fecha de modificación de sus archivos; al arrancar se restaura sin re-hashear si los archivos no cambiaron. Si cambiaron (o no hay *bitfield*, o se cortó un chequeo), los datos en disco se re-chequean (SHA-1 por pieza) antes de reanudar, de a un torrent por vez como la cola de verificación de Transmission.
 
 ---
 
@@ -105,6 +105,7 @@ Parámetros disponibles:
 - `--rpc-addr`: Dirección y puerto de escucha del servidor RPC (por defecto `127.0.0.1:9091`).
 - `--download-dir`: Directorio donde se guardarán los archivos completados (por defecto `./downloads`).
 - `--config-dir`: Carpeta donde se almacena el archivo `state.json` de sesión (por defecto `./config`).
+- `--save-interval`: Cada cuánto se guarda `state.json` mientras el daemon corre, para no perder la sesión ante un corte (por defecto `5m`; `0` guarda solo al apagar).
 - `--port`: Puerto de escucha para conexiones entrantes de peers (TCP) y para la DHT (UDP) (por defecto `6881`).
 - `--dht`: Habilita la DHT (por defecto `true`).
 - `--dht-bootstrap`: Routers de arranque de la DHT separados por comas (por defecto `router.bittorrent.com:6881`, `dht.transmissionbt.com:6881`, ...).

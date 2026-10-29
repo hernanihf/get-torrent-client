@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/hernan/get-torrent/pkg/dht"
 	"github.com/hernan/get-torrent/pkg/engine"
@@ -24,6 +25,7 @@ func main() {
 	rpcUser := flag.String("rpc-username", "", "Require HTTP Basic authentication for RPC with this username")
 	rpcPass := flag.String("rpc-password", "", "RPC password (prefer the GET_TORRENT_RPC_PASSWORD environment variable, which is not visible in process listings)")
 	rpcHosts := flag.String("rpc-host-whitelist", "", "Comma-separated extra hostnames allowed in the RPC Host header (IPs and localhost are always allowed; \"*.\" prefixes match subdomains)")
+	saveInterval := flag.Duration("save-interval", 5*time.Minute, "How often to save session state and resume data while running (0 saves only at shutdown)")
 	flag.Parse()
 
 	password := *rpcPass
@@ -57,6 +59,8 @@ func main() {
 	if err := eng.LoadState(); err != nil {
 		log.Printf("[Daemon] Notice: Could not load prior session: %v", err)
 	}
+	// Started after LoadState so a periodic save never overwrites state that has not loaded yet.
+	eng.StartAutoSave(*saveInterval)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
