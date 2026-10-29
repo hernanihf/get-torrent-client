@@ -295,7 +295,7 @@ func (e *Engine) runTorrent(t *ManagedTorrent, stop <-chan struct{}, gen int) {
 		}
 		force = false
 
-		timer := time.NewTimer(t.nextDiscovery(time.Now(), e.dhtFor(t) != nil))
+		timer := time.NewTimer(t.nextDiscovery(time.Now(), len(e.dhtFor(t)) > 0))
 		select {
 		case <-stop:
 			timer.Stop()
@@ -310,18 +310,44 @@ func (e *Engine) runTorrent(t *ManagedTorrent, stop <-chan struct{}, gen int) {
 	}
 }
 
-// dhtFor returns the DHT node to use for t, or nil: private torrents must not leak to the DHT
-// (BEP 0027).
-func (e *Engine) dhtFor(t *ManagedTorrent) *dht.Server {
-	server := e.dhtServer()
-	if server == nil {
-		return nil
-	}
+// dhtFor returns the DHT nodes (IPv4 and IPv6) to use for t, or none: private torrents must
+// not leak to the DHT (BEP 0027).
+func (e *Engine) dhtFor(t *ManagedTorrent) []*dht.Server {
 	meta, _, _ := t.components()
 	if meta.Private {
 		return nil
 	}
-	return server
+	return e.dhtServers()
+}
+
+// dhtAnnounce looks t up on every DHT node concurrently, merging the peers. It fails only if
+// every node failed.
+func (e *Engine) dhtAnnounce(ctx context.Context, servers []*dht.Server, infoHash [20]byte) ([]tracker.Peer, error) {
+	type result struct {
+		peers []tracker.Peer
+		err   error
+	}
+	results := make(chan result, len(servers))
+	for _, s := range servers {
+		go func(s *dht.Server) {
+			peers, err := s.Announce(ctx, infoHash, e.Port)
+			results <- result{peers, err}
+		}(s)
+	}
+	var peers []tracker.Peer
+	var errs []error
+	for range servers {
+		r := <-results
+		if r.err != nil {
+			errs = append(errs, r.err)
+			continue
+		}
+		peers = append(peers, r.peers...)
+	}
+	if len(errs) == len(servers) {
+		return nil, errors.Join(errs...)
+	}
+	return peers, nil
 }
 
 // launchDiscovery starts the announces and the DHT lookup that are due. Each one dials the
@@ -330,8 +356,8 @@ func (e *Engine) launchDiscovery(ctx context.Context, t *ManagedTorrent, gen int
 	t.mu.RLock()
 	hasTrackers := len(t.trackerURLsLocked()) > 0
 	t.mu.RUnlock()
-	server := e.dhtFor(t)
-	if !hasTrackers && server == nil {
+	servers := e.dhtFor(t)
+	if !hasTrackers && len(servers) == 0 {
 		return errNoPeerSources
 	}
 
@@ -359,12 +385,12 @@ func (e *Engine) launchDiscovery(ctx context.Context, t *ManagedTorrent, gen int
 		}
 	}
 
-	if server != nil && t.startDHTLookup(time.Now(), force) {
+	if len(servers) > 0 && t.startDHTLookup(time.Now(), force) {
 		meta, _, _ := t.components()
 		go func() {
 			lctx, lcancel := context.WithTimeout(ctx, dhtLookupTimeout)
 			defer lcancel()
-			peers, err := server.Announce(lctx, meta.InfoHash, e.Port)
+			peers, err := e.dhtAnnounce(lctx, servers, meta.InfoHash)
 			if ctx.Err() != nil {
 				return
 			}

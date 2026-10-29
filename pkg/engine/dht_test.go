@@ -238,3 +238,96 @@ func TestDHTIdentityPersists(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, "rejoin from saved nodes", func() bool { return second.DHT.NumNodes() > 0 })
 }
+
+func TestTrackerlessMagnetOverIPv6DHT(t *testing.T) {
+	boot, err := dht.New(dht.Config{Addr: "[::1]:0", IPv6: true})
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	t.Cleanup(func() { _ = boot.Close() })
+
+	payload := make([]byte, 70_000)
+	_, _ = rand.Read(payload)
+	info := buildTorrent(t, "dht6.bin", payload, 32768)
+	infoHash := sha1.Sum(info)
+	meta, _ := metainfo.FromInfoBytes(info, nil)
+	torrentFile, _ := meta.Marshal()
+
+	// Only the IPv6 DHT can be joined: the bootstrap node has no IPv4 address.
+	newEngine := func() *Engine {
+		eng := NewEngine(t.TempDir(), 0)
+		eng.ConfigDir = t.TempDir()
+		t.Cleanup(func() { _ = eng.Close() })
+		if err := eng.StartListener(); err != nil {
+			t.Fatal(err)
+		}
+		if err := eng.EnableDHT([]string{boot.Addr().String()}); err != nil {
+			t.Fatal(err)
+		}
+		if eng.DHT6 == nil {
+			t.Skip("IPv6 DHT node could not start")
+		}
+		waitFor(t, 5*time.Second, "IPv6 DHT bootstrap", func() bool { return eng.DHT6.NumNodes() > 0 })
+		return eng
+	}
+
+	seeder := newEngine()
+	st, err := seeder.AddTorrentBytes(torrentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAll(t, st, payload)
+	if err := seeder.StartTorrent(st.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "seeder announce on the IPv6 DHT", func() bool { return len(boot.LocalPeers(infoHash)) > 0 })
+
+	leecher := newEngine()
+	lt, err := leecher.AddMagnet(fmt.Sprintf("magnet:?xt=urn:btih:%x", infoHash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := leecher.StartTorrent(lt.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 20*time.Second, "magnet download via the IPv6 DHT", func() bool {
+		s := lt.Status()
+		if s.State == StateError {
+			t.Fatalf("leecher entered error state: %s", s.Error)
+		}
+		return s.PercentDone == 1
+	})
+	got, err := os.ReadFile(filepath.Join(leecher.DownloadDir, "dht6.bin"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("downloaded data mismatch (err=%v)", err)
+	}
+	if lt.Status().PeersFrom[SourceDHT] == 0 {
+		t.Error("the peer must have come from the DHT")
+	}
+}
+
+func TestDHTStatePerFamily(t *testing.T) {
+	eng := NewEngine(t.TempDir(), 0)
+	eng.ConfigDir = t.TempDir()
+	t.Cleanup(func() { _ = eng.Close() })
+	if err := eng.StartListener(); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.EnableDHT(nil); err != nil {
+		t.Fatal(err)
+	}
+	if eng.DHT6 == nil {
+		t.Skip("IPv6 DHT node could not start")
+	}
+	if eng.DHT6.ID() != eng.DHT.ID() {
+		t.Error("both DHT nodes must share one node ID")
+	}
+	if err := eng.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"dht.json", "dht6.json"} {
+		if _, err := os.Stat(filepath.Join(eng.ConfigDir, f)); err != nil {
+			t.Errorf("%s not saved: %v", f, err)
+		}
+	}
+}

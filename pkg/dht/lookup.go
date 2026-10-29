@@ -201,15 +201,15 @@ func (s *Server) lookup(ctx context.Context, target NodeID, method string, extra
 		rep.c.token, _ = rep.r["token"].(string)
 
 		if values, ok := rep.r["values"].([]any); ok {
-			for _, p := range decodePeers(values) {
+			for _, p := range s.fam.decodePeers(values) {
 				if key := p.String(); !seenPeers[key] && len(res.peers) < maxLookupPeers {
 					seenPeers[key] = true
 					res.peers = append(res.peers, p)
 				}
 			}
 		}
-		if nodes, ok := rep.r["nodes"].(string); ok {
-			decoded := decodeNodes(nodes)
+		if nodes, ok := rep.r[s.fam.nodesKey].(string); ok {
+			decoded := s.fam.decodeNodes(nodes)
 			if len(decoded) > maxNodesPerResponse {
 				decoded = decoded[:maxNodesPerResponse]
 			}

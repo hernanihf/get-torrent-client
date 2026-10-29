@@ -15,8 +15,7 @@ import (
 )
 
 const (
-	compactNodeLen = 26 // 20-byte node ID + 4-byte IPv4 + 2-byte port
-	compactPeerLen = 6  // 4-byte IPv4 + 2-byte port
+	compactNodeLen = 26 // IPv4: 20-byte node ID + 4-byte address + 2-byte port
 
 	// clientVersion is sent in the optional "v" key of every message.
 	clientVersion = "GT01"
@@ -61,16 +60,43 @@ type NodeInfo struct {
 	Addr *net.UDPAddr
 }
 
-// encodeNodes serializes IPv4 nodes in compact node info format; other address families are skipped.
-func encodeNodes(nodes []NodeInfo) string {
-	buf := make([]byte, 0, len(nodes)*compactNodeLen)
+// family is an address family's wire format: IPv4 as in BEP 0005, or IPv6 as in BEP 0032,
+// which runs a separate DHT with 16-byte addresses and its nodes under "nodes6".
+type family struct {
+	network  string // "udp4" or "udp6"
+	nodesKey string // "nodes" or "nodes6"
+	ipLen    int    // 4 or 16
+}
+
+var (
+	ipv4 = family{network: "udp4", nodesKey: "nodes", ipLen: net.IPv4len}
+	ipv6 = family{network: "udp6", nodesKey: "nodes6", ipLen: net.IPv6len}
+)
+
+func (f family) nodeLen() int { return 20 + f.ipLen + 2 }
+func (f family) peerLen() int { return f.ipLen + 2 }
+
+// ip returns addr in this family's wire form, or nil if it belongs to the other family.
+func (f family) ip(addr net.IP) net.IP {
+	if f.ipLen == net.IPv4len {
+		return addr.To4()
+	}
+	if addr.To4() != nil {
+		return nil
+	}
+	return addr.To16()
+}
+
+// encodeNodes serializes nodes in compact node info format; other address families are skipped.
+func (f family) encodeNodes(nodes []NodeInfo) string {
+	buf := make([]byte, 0, len(nodes)*f.nodeLen())
 	for _, n := range nodes {
-		ip4 := n.Addr.IP.To4()
-		if ip4 == nil {
+		ip := f.ip(n.Addr.IP)
+		if ip == nil {
 			continue
 		}
 		buf = append(buf, n.ID[:]...)
-		buf = append(buf, ip4...)
+		buf = append(buf, ip...)
 		buf = binary.BigEndian.AppendUint16(buf, uint16(n.Addr.Port))
 	}
 	return string(buf)
@@ -78,50 +104,61 @@ func encodeNodes(nodes []NodeInfo) string {
 
 // decodeNodes parses compact node info, skipping entries with a zero port. A trailing partial
 // record is ignored.
-func decodeNodes(s string) []NodeInfo {
+func (f family) decodeNodes(s string) []NodeInfo {
 	var nodes []NodeInfo
-	for off := 0; off+compactNodeLen <= len(s); off += compactNodeLen {
-		rec := s[off : off+compactNodeLen]
-		port := binary.BigEndian.Uint16([]byte(rec[24:26]))
+	size := f.nodeLen()
+	for off := 0; off+size <= len(s); off += size {
+		rec := s[off : off+size]
+		port := binary.BigEndian.Uint16([]byte(rec[size-2:]))
 		if port == 0 {
 			continue
 		}
 		var n NodeInfo
 		copy(n.ID[:], rec[:20])
-		n.Addr = &net.UDPAddr{IP: net.IPv4(rec[20], rec[21], rec[22], rec[23]), Port: int(port)}
+		ip := make(net.IP, f.ipLen)
+		copy(ip, rec[20:20+f.ipLen])
+		n.Addr = &net.UDPAddr{IP: ip, Port: int(port)}
 		nodes = append(nodes, n)
 	}
 	return nodes
 }
 
-// encodePeer serializes an IPv4 peer in compact format, or returns "" for non-IPv4 addresses.
-func encodePeer(p tracker.Peer) string {
-	ip4 := p.IP.To4()
-	if ip4 == nil {
+// encodePeer serializes a peer in compact format, or returns "" for the other address family.
+func (f family) encodePeer(p tracker.Peer) string {
+	ip := f.ip(p.IP)
+	if ip == nil {
 		return ""
 	}
-	buf := make([]byte, compactPeerLen)
-	copy(buf, ip4)
-	binary.BigEndian.PutUint16(buf[4:], p.Port)
+	buf := make([]byte, f.peerLen())
+	copy(buf, ip)
+	binary.BigEndian.PutUint16(buf[f.ipLen:], p.Port)
 	return string(buf)
 }
 
 // decodePeers parses a get_peers "values" list of compact peers, skipping malformed entries.
-func decodePeers(values []any) []tracker.Peer {
+func (f family) decodePeers(values []any) []tracker.Peer {
 	var peers []tracker.Peer
 	for _, v := range values {
 		s, ok := v.(string)
-		if !ok || len(s) != compactPeerLen {
+		if !ok || len(s) != f.peerLen() {
 			continue
 		}
-		port := binary.BigEndian.Uint16([]byte(s[4:6]))
+		port := binary.BigEndian.Uint16([]byte(s[f.ipLen:]))
 		if port == 0 {
 			continue
 		}
-		peers = append(peers, tracker.Peer{IP: net.IPv4(s[0], s[1], s[2], s[3]), Port: port})
+		ip := make(net.IP, f.ipLen)
+		copy(ip, s[:f.ipLen])
+		peers = append(peers, tracker.Peer{IP: ip, Port: port})
 	}
 	return peers
 }
+
+// IPv4 helpers (BEP 0005).
+func encodeNodes(nodes []NodeInfo) string     { return ipv4.encodeNodes(nodes) }
+func decodeNodes(s string) []NodeInfo         { return ipv4.decodeNodes(s) }
+func encodePeer(p tracker.Peer) string        { return ipv4.encodePeer(p) }
+func decodePeers(values []any) []tracker.Peer { return ipv4.decodePeers(values) }
 
 // KRPCError is an error returned by a remote node ("y": "e").
 type KRPCError struct {

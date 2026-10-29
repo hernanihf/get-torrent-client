@@ -298,6 +298,8 @@ type Engine struct {
 
 	// DHT is the BEP 0005 node used for trackerless peer discovery; nil when disabled.
 	DHT *dht.Server
+	// DHT6 is the BEP 0032 IPv6 node, started alongside DHT when IPv6 is available; may be nil.
+	DHT6 *dht.Server
 
 	ctx    context.Context // cancelled by Close
 	cancel context.CancelFunc
@@ -806,7 +808,7 @@ func (e *Engine) Close() error {
 	// Let trackers know we are gone; each announce is bounded by stoppedAnnounceTimeout.
 	e.stopping.Wait()
 
-	if server := e.dhtServer(); server != nil {
+	for _, server := range e.dhtServers() {
 		if err := server.Close(); err != nil {
 			errs = append(errs, err)
 		}

@@ -55,11 +55,14 @@ type Config struct {
 	Nodes []string
 	// QueryTimeout overrides DefaultQueryTimeout when non-zero.
 	QueryTimeout time.Duration
+	// IPv6 runs the node on the separate IPv6 DHT (BEP 0032) instead of the IPv4 one.
+	IPv6 bool
 }
 
 // Server is a DHT node: it answers KRPC queries and performs lookups. Safe for concurrent use.
 type Server struct {
 	id           NodeID
+	fam          family
 	conn         *net.UDPConn
 	table        *Table
 	peers        *peerStore
@@ -85,11 +88,15 @@ type pendingQuery struct {
 
 // New starts a DHT node listening on cfg.Addr. Call Bootstrap to join the network.
 func New(cfg Config) (*Server, error) {
-	laddr, err := net.ResolveUDPAddr("udp4", cfg.Addr)
+	fam := ipv4
+	if cfg.IPv6 {
+		fam = ipv6
+	}
+	laddr, err := net.ResolveUDPAddr(fam.network, cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("dht: resolving listen address: %w", err)
 	}
-	conn, err := net.ListenUDP("udp4", laddr)
+	conn, err := net.ListenUDP(fam.network, laddr)
 	if err != nil {
 		return nil, fmt.Errorf("dht: listening on %s: %w", cfg.Addr, err)
 	}
@@ -106,6 +113,7 @@ func New(cfg Config) (*Server, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		id:           id,
+		fam:          fam,
 		conn:         conn,
 		table:        NewTable(id),
 		peers:        newPeerStore(),
@@ -163,6 +171,9 @@ func (s *Server) Close() error {
 // AddNode pings addr asynchronously; if it answers it joins the routing table.
 // Used for nodes learnt from peers' BEP 0005 PORT messages.
 func (s *Server) AddNode(addr *net.UDPAddr) {
+	if s.fam.ip(addr.IP) == nil {
+		return // the other address family's DHT
+	}
 	go func() { _, _ = s.query(s.ctx, addr, "ping", map[string]any{}) }()
 }
 
@@ -275,7 +286,7 @@ func (s *Server) handleQuery(msg *message, addr *net.UDPAddr) {
 			fail(ErrCodeProtocol, "invalid target")
 			return
 		}
-		reply(map[string]any{"nodes": encodeNodes(s.table.Closest(target, K))})
+		reply(map[string]any{s.fam.nodesKey: s.fam.encodeNodes(s.table.Closest(target, K))})
 
 	case "get_peers":
 		ih, ok := getID(msg.A, "info_hash")
@@ -287,13 +298,13 @@ func (s *Server) handleQuery(msg *message, addr *net.UDPAddr) {
 		if peers := s.peers.get(ih, maxValues, time.Now()); len(peers) > 0 {
 			values := make([]any, 0, len(peers))
 			for _, p := range peers {
-				if c := encodePeer(p); c != "" {
+				if c := s.fam.encodePeer(p); c != "" {
 					values = append(values, c)
 				}
 			}
 			r["values"] = values
 		} else {
-			r["nodes"] = encodeNodes(s.table.Closest(ih, K))
+			r[s.fam.nodesKey] = s.fam.encodeNodes(s.table.Closest(ih, K))
 		}
 		reply(r)
 
@@ -426,7 +437,7 @@ func (s *Server) Bootstrap(ctx context.Context) error {
 		wg.Add(1)
 		go func(h string) {
 			defer wg.Done()
-			addr, err := net.ResolveUDPAddr("udp4", h)
+			addr, err := net.ResolveUDPAddr(s.fam.network, h)
 			if err != nil {
 				return
 			}
@@ -434,9 +445,9 @@ func (s *Server) Bootstrap(ctx context.Context) error {
 			if err != nil {
 				return
 			}
-			nodes, _ := r["nodes"].(string)
+			nodes, _ := r[s.fam.nodesKey].(string)
 			mu.Lock()
-			found = append(found, decodeNodes(nodes)...)
+			found = append(found, s.fam.decodeNodes(nodes)...)
 			mu.Unlock()
 		}(h)
 	}
