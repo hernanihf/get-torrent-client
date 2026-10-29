@@ -81,6 +81,7 @@ type ManagedTorrent struct {
 	restartAfter   bool          // restart once verification finishes
 
 	files       FileSelection // per-file wanted/priority; zero value means the default (all, normal)
+	finished    bool          // stopped by a seeding limit (isFinished)
 	limits      TorrentLimits
 	downLimiter *bandwidth.Limiter // per-torrent limiters; nil means unlimited
 	upLimiter   *bandwidth.Limiter
@@ -276,6 +277,12 @@ type Engine struct {
 	AltSpeedUp      int64
 	AltSpeedEnabled bool
 
+	// Session seeding limits (Transmission's seedRatioLimit and idle-seeding-limit).
+	SeedRatioLimit          float64
+	SeedRatioLimited        bool
+	IdleSeedingLimit        int // minutes
+	IdleSeedingLimitEnabled bool
+
 	// Session-wide limiters, kept in sync with the settings above by applyLimitsLocked.
 	sessionDown      *bandwidth.Limiter
 	sessionUp        *bandwidth.Limiter
@@ -324,6 +331,8 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 		announceKey:      binary.BigEndian.Uint32(key[:]),
 		AltSpeedDown:     50,
 		AltSpeedUp:       50,
+		SeedRatioLimit:   2,
+		IdleSeedingLimit: 30,
 		sessionDown:      bandwidth.NewLimiter(),
 		sessionUp:        bandwidth.NewLimiter(),
 		stats:            sessionStats{started: time.Now()},
@@ -425,13 +434,27 @@ func (e *Engine) GetTorrentByID(id int) *ManagedTorrent {
 	return nil
 }
 
-// StartTorrent begins tracker announcing and peer connections for a given torrent ID.
+// StartTorrent begins tracker announcing and peer connections for a given torrent ID. It is the
+// user's start: a torrent that already met its seed ratio gets that limit lifted.
 func (e *Engine) StartTorrent(id int) error {
 	t := e.GetTorrentByID(id)
 	if t == nil {
 		return fmt.Errorf("torrent with id %d not found", id)
 	}
+	if !t.running() {
+		e.liftReachedRatio(t)
+	}
+	return e.startTorrent(t)
+}
 
+func (t *ManagedTorrent) running() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.State == StateDownloading || t.State == StateSeeding
+}
+
+// startTorrent starts t as it is (restored sessions, finished verifications).
+func (e *Engine) startTorrent(t *ManagedTorrent) error {
 	t.mu.Lock()
 	if t.State == StateDownloading || t.State == StateSeeding {
 		t.mu.Unlock()
@@ -451,6 +474,7 @@ func (e *Engine) StartTorrent(id int) error {
 	t.startDate = time.Now()
 	t.LastError = ""
 	t.sendCompleted = false
+	t.finished = false
 	t.runGen++
 	gen := t.runGen
 	t.stopChan = make(chan struct{})
@@ -459,6 +483,7 @@ func (e *Engine) StartTorrent(id int) error {
 
 	go e.runTorrent(t, stop, gen)
 	go e.runChoker(t, stop)
+	go e.runSeedLimits(t, stop)
 	return nil
 }
 

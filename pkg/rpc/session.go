@@ -66,8 +66,8 @@ func (s *Server) sessionValues() map[string]any {
 		"download-queue-enabled":               false,
 		"download-queue-size":                  5,
 		"encryption":                           "tolerated", // closest value: we only speak plaintext, and session-set rejects the others
-		"idle-seeding-limit":                   30,
-		"idle-seeding-limit-enabled":           false,
+		"idle-seeding-limit":                   settings.IdleSeedingLimit,
+		"idle-seeding-limit-enabled":           settings.IdleSeedingLimitEnabled,
 		"incomplete-dir":                       downloadDir,
 		"incomplete-dir-enabled":               false,
 		"lpd-enabled":                          false,
@@ -91,8 +91,8 @@ func (s *Server) sessionValues() map[string]any {
 		"script-torrent-done-seeding-filename": "",
 		"seed-queue-enabled":                   false,
 		"seed-queue-size":                      10,
-		"seedRatioLimit":                       2.0,
-		"seedRatioLimited":                     false,
+		"seedRatioLimit":                       settings.SeedRatioLimit,
+		"seedRatioLimited":                     settings.SeedRatioLimited,
 		"session-id":                           sessionID,
 		"speed-limit-down":                     settings.SpeedLimitDown,
 		"speed-limit-down-enabled":             settings.SpeedLimitDownEnabled,
@@ -119,6 +119,8 @@ var settableSessionKeys = map[string]bool{
 	"download-dir": true, "speed-limit-down": true, "speed-limit-up": true,
 	"speed-limit-down-enabled": true, "speed-limit-up-enabled": true,
 	"alt-speed-down": true, "alt-speed-up": true, "alt-speed-enabled": true,
+	"seedRatioLimit": true, "seedRatioLimited": true,
+	"idle-seeding-limit": true, "idle-seeding-limit-enabled": true,
 }
 
 // readOnlySessionKeys are session-get keys that clients cannot set; Transmission ignores them.
@@ -205,6 +207,18 @@ func (s *Server) sessionSet(args map[string]any) (map[string]any, error) {
 		}
 		if v, ok := args["alt-speed-enabled"].(bool); ok {
 			st.AltSpeedEnabled = v
+		}
+		if v, ok := args["seedRatioLimit"].(float64); ok {
+			st.SeedRatioLimit = v
+		}
+		if v, ok := args["seedRatioLimited"].(bool); ok {
+			st.SeedRatioLimited = v
+		}
+		if v, ok := args["idle-seeding-limit"].(float64); ok {
+			st.IdleSeedingLimit = int(v)
+		}
+		if v, ok := args["idle-seeding-limit-enabled"].(bool); ok {
+			st.IdleSeedingLimitEnabled = v
 		}
 	})
 	_ = s.engine.SaveState()

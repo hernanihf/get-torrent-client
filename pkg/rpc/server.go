@@ -290,6 +290,18 @@ func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, key := range []string{"seedRatioMode", "seedIdleMode"} {
+		if v, ok := args[key]; ok {
+			if m, ok := v.(float64); !ok || m != float64(int(m)) || m < engine.SeedLimitGlobal || m > engine.SeedLimitUnlimited {
+				return nil, fmt.Errorf("%s must be 0, 1 or 2", key)
+			}
+		}
+	}
+	for _, key := range []string{"seedRatioLimit", "seedIdleLimit"} {
+		if v, ok := args[key].(float64); ok && v < 0 {
+			return nil, fmt.Errorf("%s must not be negative", key)
+		}
+	}
 	if hasFileArgs(args) {
 		for _, t := range sel.torrents {
 			if err := s.engine.SetFileSelection(t.ID, func(fs *engine.FileSelection) error {
@@ -315,6 +327,18 @@ func (s *Server) torrentSet(args map[string]any) (map[string]any, error) {
 			}
 			if v, ok := args["honorsSessionLimits"].(bool); ok {
 				l.HonorsSessionLimits = v
+			}
+			if v, ok := args["seedRatioLimit"].(float64); ok {
+				l.SeedRatioLimit = v
+			}
+			if v, ok := args["seedRatioMode"].(float64); ok {
+				l.SeedRatioMode = int(v)
+			}
+			if v, ok := args["seedIdleLimit"].(float64); ok {
+				l.SeedIdleLimit = int(v)
+			}
+			if v, ok := args["seedIdleMode"].(float64); ok {
+				l.SeedIdleMode = int(v)
 			}
 		})
 		if err != nil {

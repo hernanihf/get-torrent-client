@@ -48,3 +48,33 @@ func TestSameValue(t *testing.T) {
 		}
 	}
 }
+
+func TestSeedLimitSettings(t *testing.T) {
+	env := newEnv(t, Options{})
+	env.mustSucceed(t, "session-set", map[string]any{"seedRatioLimit": 1.25, "seedRatioLimited": true, "idle-seeding-limit": 45, "idle-seeding-limit-enabled": true})
+	got := env.mustSucceed(t, "session-get", map[string]any{"fields": []any{"seedRatioLimit", "seedRatioLimited", "idle-seeding-limit", "idle-seeding-limit-enabled"}})
+	if got["seedRatioLimit"] != 1.25 || got["seedRatioLimited"] != true || got["idle-seeding-limit"] != float64(45) || got["idle-seeding-limit-enabled"] != true {
+		t.Errorf("session seed limits not applied: %v", got)
+	}
+
+	torrent, _ := makeTorrent(t, "s.bin", 1000, 16384)
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "paused": true})
+	fields := map[string]any{"fields": []any{"seedRatioMode", "seedRatioLimit", "seedIdleMode", "seedIdleLimit", "isFinished", "etaIdle"}}
+	tor := env.torrents(t, fields)[0]
+	if tor["seedRatioMode"] != float64(0) || tor["seedRatioLimit"] != float64(2) || tor["seedIdleLimit"] != float64(30) || tor["isFinished"] != false {
+		t.Errorf("unexpected defaults: %v", tor)
+	}
+
+	env.mustSucceed(t, "torrent-set", map[string]any{"ids": []any{1}, "seedRatioMode": 1, "seedRatioLimit": 0.5, "seedIdleMode": 2, "seedIdleLimit": 5})
+	tor = env.torrents(t, fields)[0]
+	if tor["seedRatioMode"] != float64(1) || tor["seedRatioLimit"] != 0.5 || tor["seedIdleMode"] != float64(2) || tor["seedIdleLimit"] != float64(5) {
+		t.Errorf("torrent-set seed limits not applied: %v", tor)
+	}
+
+	for _, args := range []map[string]any{{"seedRatioMode": 3}, {"seedIdleMode": 1.5}, {"seedRatioLimit": -1}} {
+		args["ids"] = []any{1}
+		if r := env.call(t, "torrent-set", args); r.Result == "success" {
+			t.Errorf("torrent-set %v must fail", args)
+		}
+	}
+}

@@ -239,7 +239,7 @@ func (e *Engine) startVerify(t *ManagedTorrent, restart bool) {
 		t.mu.Unlock()
 
 		if restart {
-			_ = e.StartTorrent(t.ID)
+			_ = e.startTorrent(t)
 		}
 	}()
 }

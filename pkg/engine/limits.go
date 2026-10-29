@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hernan/get-torrent/pkg/bandwidth"
@@ -19,10 +20,31 @@ type TorrentLimits struct {
 	UploadLimit         int64 // KB/s
 	UploadLimited       bool
 	HonorsSessionLimits bool // also obey the session-wide limits
+
+	// Seeding limits: the modes are SeedLimitGlobal, SeedLimitSingle or SeedLimitUnlimited.
+	SeedRatioMode  int
+	SeedRatioLimit float64
+	SeedIdleMode   int
+	SeedIdleLimit  int // minutes
 }
 
 func defaultTorrentLimits() TorrentLimits {
-	return TorrentLimits{DownloadLimit: 100, UploadLimit: 100, HonorsSessionLimits: true}
+	return TorrentLimits{
+		DownloadLimit: 100, UploadLimit: 100, HonorsSessionLimits: true,
+		SeedRatioLimit: 2, SeedIdleLimit: 30,
+	}
+}
+
+// UnmarshalJSON decodes on top of the defaults, so state files written before a field existed
+// get its default rather than the zero value.
+func (l *TorrentLimits) UnmarshalJSON(b []byte) error {
+	type plain TorrentLimits
+	p := plain(defaultTorrentLimits())
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*l = TorrentLimits(p)
+	return nil
 }
 
 // Limits returns the torrent's bandwidth settings.

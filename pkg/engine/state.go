@@ -41,16 +41,21 @@ type TorrentStateEntry struct {
 
 // EngineState captures global session settings and active torrent states.
 type EngineState struct {
-	DownloadDir    string              `json:"download_dir"`
-	SpeedLimitDown int64               `json:"speed_limit_down"`
-	SpeedLimitUp   int64               `json:"speed_limit_up"`
-	SpeedDownOn    bool                `json:"speed_limit_down_enabled,omitempty"`
-	SpeedUpOn      bool                `json:"speed_limit_up_enabled,omitempty"`
-	AltSpeedDown   int64               `json:"alt_speed_down"`
-	AltSpeedUp     int64               `json:"alt_speed_up"`
-	AltSpeedOn     bool                `json:"alt_speed_enabled,omitempty"`
-	Stats          CumulativeStats     `json:"cumulative_stats"`
-	Torrents       []TorrentStateEntry `json:"torrents"`
+	DownloadDir    string `json:"download_dir"`
+	SpeedLimitDown int64  `json:"speed_limit_down"`
+	SpeedLimitUp   int64  `json:"speed_limit_up"`
+	SpeedDownOn    bool   `json:"speed_limit_down_enabled,omitempty"`
+	SpeedUpOn      bool   `json:"speed_limit_up_enabled,omitempty"`
+	AltSpeedDown   int64  `json:"alt_speed_down"`
+	AltSpeedUp     int64  `json:"alt_speed_up"`
+	AltSpeedOn     bool   `json:"alt_speed_enabled,omitempty"`
+	// Pointers: absent in older state files, which keep the defaults.
+	SeedRatio     *float64            `json:"seed_ratio_limit,omitempty"`
+	SeedRatioOn   bool                `json:"seed_ratio_limited,omitempty"`
+	IdleSeeding   *int                `json:"idle_seeding_limit,omitempty"`
+	IdleSeedingOn bool                `json:"idle_seeding_limit_enabled,omitempty"`
+	Stats         CumulativeStats     `json:"cumulative_stats"`
+	Torrents      []TorrentStateEntry `json:"torrents"`
 }
 
 // SaveState serializes the current session and torrent states to state.json.
@@ -84,6 +89,10 @@ func (e *Engine) SaveState() error {
 		AltSpeedDown:   e.AltSpeedDown,
 		AltSpeedUp:     e.AltSpeedUp,
 		AltSpeedOn:     e.AltSpeedEnabled,
+		SeedRatio:      &e.SeedRatioLimit,
+		SeedRatioOn:    e.SeedRatioLimited,
+		IdleSeeding:    &e.IdleSeedingLimit,
+		IdleSeedingOn:  e.IdleSeedingLimitEnabled,
 		Stats:          cumulative,
 		Torrents:       make([]TorrentStateEntry, 0, len(e.torrents)),
 	}
@@ -212,6 +221,13 @@ func (e *Engine) LoadState() error {
 		e.AltSpeedDown, e.AltSpeedUp = state.AltSpeedDown, state.AltSpeedUp
 	}
 	e.AltSpeedEnabled = state.AltSpeedOn
+	if state.SeedRatio != nil {
+		e.SeedRatioLimit = *state.SeedRatio
+	}
+	if state.IdleSeeding != nil {
+		e.IdleSeedingLimit = *state.IdleSeeding
+	}
+	e.SeedRatioLimited, e.IdleSeedingLimitEnabled = state.SeedRatioOn, state.IdleSeedingOn
 	e.applyLimitsLocked()
 	e.cumulative = state.Stats
 	e.mu.Unlock()
@@ -274,7 +290,7 @@ func (e *Engine) LoadState() error {
 		switch {
 		case run:
 			t.mu.Unlock()
-			_ = e.StartTorrent(t.ID)
+			_ = e.startTorrent(t)
 		case entry.State == StateChecking:
 			t.State = StateStopped // interrupted verification (older state files)
 			t.mu.Unlock()
@@ -319,6 +335,11 @@ type Settings struct {
 	AltSpeedDown          int64 // KB/s
 	AltSpeedUp            int64 // KB/s
 	AltSpeedEnabled       bool
+
+	SeedRatioLimit          float64
+	SeedRatioLimited        bool
+	IdleSeedingLimit        int // minutes
+	IdleSeedingLimitEnabled bool
 }
 
 // Settings returns a consistent copy of the session settings.
@@ -338,6 +359,11 @@ func (e *Engine) settingsLocked() Settings {
 		AltSpeedDown:          e.AltSpeedDown,
 		AltSpeedUp:            e.AltSpeedUp,
 		AltSpeedEnabled:       e.AltSpeedEnabled,
+
+		SeedRatioLimit:          e.SeedRatioLimit,
+		SeedRatioLimited:        e.SeedRatioLimited,
+		IdleSeedingLimit:        e.IdleSeedingLimit,
+		IdleSeedingLimitEnabled: e.IdleSeedingLimitEnabled,
 	}
 }
 
@@ -351,5 +377,7 @@ func (e *Engine) UpdateSettings(fn func(*Settings)) {
 	e.SpeedLimitDown, e.SpeedLimitUp = st.SpeedLimitDown, st.SpeedLimitUp
 	e.SpeedLimitDownEnabled, e.SpeedLimitUpEnabled = st.SpeedLimitDownEnabled, st.SpeedLimitUpEnabled
 	e.AltSpeedDown, e.AltSpeedUp, e.AltSpeedEnabled = st.AltSpeedDown, st.AltSpeedUp, st.AltSpeedEnabled
+	e.SeedRatioLimit, e.SeedRatioLimited = st.SeedRatioLimit, st.SeedRatioLimited
+	e.IdleSeedingLimit, e.IdleSeedingLimitEnabled = st.IdleSeedingLimit, st.IdleSeedingLimitEnabled
 	e.applyLimitsLocked()
 }

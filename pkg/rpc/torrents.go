@@ -9,6 +9,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hernan/get-torrent/pkg/engine"
 	"github.com/hernan/get-torrent/pkg/storage"
@@ -47,6 +48,7 @@ func statusCode(s engine.TorrentState) int {
 // fieldCtx carries one torrent's snapshot while fields are rendered; expensive parts are
 // computed at most once, and only if a requested field needs them.
 type fieldCtx struct {
+	e        *engine.Engine
 	t        *engine.ManagedTorrent
 	st       engine.TorrentStatus
 	queuePos int
@@ -127,15 +129,35 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 		if c.st.MetadataPercentComplete < 1 {
 			return etaUnknown // size unknown until the magnet's metadata arrives
 		}
-		if c.st.State != engine.StateDownloading {
+		switch c.st.State {
+		case engine.StateDownloading:
+			if c.st.RateDownload <= 0 {
+				return etaUnknown
+			}
+			return c.st.Left / c.st.RateDownload
+		case engine.StateSeeding:
+			// Time until the seed ratio is reached, as in Transmission.
+			goal, ok := c.e.SeedRatioGoal(c.t)
+			if !ok {
+				return etaNotAvailable
+			}
+			if c.st.RateUpload <= 0 {
+				return etaUnknown
+			}
+			return max(goal-c.st.Uploaded, 0) / c.st.RateUpload
+		}
+		return etaNotAvailable
+	},
+	"etaIdle": func(c *fieldCtx) any {
+		if c.st.State != engine.StateSeeding {
 			return etaNotAvailable
 		}
-		if c.st.RateDownload <= 0 {
-			return etaUnknown
+		left, ok := c.e.SeedIdleRemaining(c.t, time.Now())
+		if !ok {
+			return etaNotAvailable
 		}
-		return c.st.Left / c.st.RateDownload
+		return int64(left / time.Second)
 	},
-	"etaIdle":    func(c *fieldCtx) any { return etaNotAvailable },
 	"file-count": func(c *fieldCtx) any { return len(c.fileList()) },
 	"files": func(c *fieldCtx) any {
 		out := make([]map[string]any, 0, len(c.fileList()))
@@ -157,7 +179,7 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"haveValid":           func(c *fieldCtx) any { return c.st.HaveValid },
 	"honorsSessionLimits": func(c *fieldCtx) any { return c.t.Limits().HonorsSessionLimits },
 	"id":                  func(c *fieldCtx) any { return c.st.ID },
-	"isFinished":          func(c *fieldCtx) any { return false }, // no seed ratio/idle limits yet
+	"isFinished":          func(c *fieldCtx) any { return c.t.Finished() },
 	"isPrivate":           func(c *fieldCtx) any { return c.st.Private },
 	"isStalled":           func(c *fieldCtx) any { return false },
 	"labels":              func(c *fieldCtx) any { return []string{} },
@@ -248,10 +270,10 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"recheckProgress":    func(c *fieldCtx) any { return c.st.RecheckProgress },
 	"secondsDownloading": func(c *fieldCtx) any { return c.st.SecondsDownloading },
 	"secondsSeeding":     func(c *fieldCtx) any { return c.st.SecondsSeeding },
-	"seedIdleLimit":      func(c *fieldCtx) any { return 30 },
-	"seedIdleMode":       func(c *fieldCtx) any { return 0 }, // follow session settings
-	"seedRatioLimit":     func(c *fieldCtx) any { return 2.0 },
-	"seedRatioMode":      func(c *fieldCtx) any { return 0 },
+	"seedIdleLimit":      func(c *fieldCtx) any { return c.t.Limits().SeedIdleLimit },
+	"seedIdleMode":       func(c *fieldCtx) any { return c.t.Limits().SeedIdleMode },
+	"seedRatioLimit":     func(c *fieldCtx) any { return c.t.Limits().SeedRatioLimit },
+	"seedRatioMode":      func(c *fieldCtx) any { return c.t.Limits().SeedRatioMode },
 	"sizeWhenDone":       func(c *fieldCtx) any { return c.st.SizeWhenDone },
 	"startDate":          func(c *fieldCtx) any { return c.st.StartDate },
 	"status":             func(c *fieldCtx) any { return statusCode(c.st.State) },
@@ -436,7 +458,7 @@ func (s *Server) torrentGet(args map[string]any) (map[string]any, error) {
 	}
 
 	for _, t := range sel.torrents {
-		ctx := &fieldCtx{t: t, st: t.Status(), queuePos: queuePos[t.ID]}
+		ctx := &fieldCtx{e: s.engine, t: t, st: t.Status(), queuePos: queuePos[t.ID]}
 		if table == "table" {
 			row := make([]any, len(fields))
 			for i, f := range fields {
