@@ -168,7 +168,7 @@ Paquetes testeados:
 
 ---
 
-## 🤖 Desarrollo Multiagente (Google Antigravity)
+## 🤖 Desarrollo Multiagente
 
 Este proyecto fue desarrollado bajo una arquitectura multiagente coordinada:
 - **Controlador (Primary Agent)**: Orquestador general del ciclo de vida y cumplimiento de especificaciones.
