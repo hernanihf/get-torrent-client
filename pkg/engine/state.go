@@ -55,6 +55,7 @@ type EngineState struct {
 	IdleSeeding   *int                `json:"idle_seeding_limit,omitempty"`
 	IdleSeedingOn bool                `json:"idle_seeding_limit_enabled,omitempty"`
 	PEXEnabled    *bool               `json:"pex_enabled,omitempty"`
+	StartAdded    *bool               `json:"start_added_torrents,omitempty"`
 	Stats         CumulativeStats     `json:"cumulative_stats"`
 	Torrents      []TorrentStateEntry `json:"torrents"`
 }
@@ -95,6 +96,7 @@ func (e *Engine) SaveState() error {
 		IdleSeeding:    &e.IdleSeedingLimit,
 		IdleSeedingOn:  e.IdleSeedingLimitEnabled,
 		PEXEnabled:     &e.PEXEnabled,
+		StartAdded:     &e.StartAddedTorrents,
 		Stats:          cumulative,
 		Torrents:       make([]TorrentStateEntry, 0, len(e.torrents)),
 	}
@@ -233,6 +235,9 @@ func (e *Engine) LoadState() error {
 	if state.PEXEnabled != nil {
 		e.PEXEnabled = *state.PEXEnabled
 	}
+	if state.StartAdded != nil {
+		e.StartAddedTorrents = *state.StartAdded
+	}
 	e.applyLimitsLocked()
 	e.cumulative = state.Stats
 	e.mu.Unlock()
@@ -346,7 +351,8 @@ type Settings struct {
 	IdleSeedingLimit        int // minutes
 	IdleSeedingLimitEnabled bool
 
-	PEXEnabled bool
+	PEXEnabled         bool
+	StartAddedTorrents bool
 }
 
 // Settings returns a consistent copy of the session settings.
@@ -372,7 +378,8 @@ func (e *Engine) settingsLocked() Settings {
 		IdleSeedingLimit:        e.IdleSeedingLimit,
 		IdleSeedingLimitEnabled: e.IdleSeedingLimitEnabled,
 
-		PEXEnabled: e.PEXEnabled,
+		PEXEnabled:         e.PEXEnabled,
+		StartAddedTorrents: e.StartAddedTorrents,
 	}
 }
 
@@ -389,5 +396,6 @@ func (e *Engine) UpdateSettings(fn func(*Settings)) {
 	e.SeedRatioLimit, e.SeedRatioLimited = st.SeedRatioLimit, st.SeedRatioLimited
 	e.IdleSeedingLimit, e.IdleSeedingLimitEnabled = st.IdleSeedingLimit, st.IdleSeedingLimitEnabled
 	e.PEXEnabled = st.PEXEnabled
+	e.StartAddedTorrents = st.StartAddedTorrents
 	e.applyLimitsLocked()
 }

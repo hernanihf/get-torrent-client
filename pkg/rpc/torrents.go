@@ -575,7 +575,7 @@ func isEmptyArg(v any) bool {
 
 // torrentAdd implements "torrent-add": "filename" may be a local .torrent path, an http(s) URL
 // or a magnet URI, and "metainfo" a base64-encoded .torrent. Torrents start immediately unless
-// "paused" is true. Re-adding an existing torrent reports "torrent-duplicate".
+// "paused" is true (or, when absent, start-added-torrents is off). Re-adding an existing torrent reports "torrent-duplicate".
 func (s *Server) torrentAdd(args map[string]any) (map[string]any, error) {
 	req := engine.AddRequest{}
 	req.Filename, _ = args["filename"].(string)
@@ -614,7 +614,12 @@ func (s *Server) torrentAdd(args map[string]any) (map[string]any, error) {
 			return nil, err
 		}
 	}
-	if paused, _ := args["paused"].(bool); !paused {
+	// Without an explicit "paused", the session's start-added-torrents decides.
+	paused, ok := args["paused"].(bool)
+	if !ok {
+		paused = !s.engine.Settings().StartAddedTorrents
+	}
+	if !paused {
 		_ = s.engine.StartTorrent(t.ID)
 	}
 	_ = s.engine.SaveState()

@@ -112,3 +112,23 @@ func TestTorrentAddRejectsUnsupportedArguments(t *testing.T) {
 	}
 	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent), "paused": true, "bandwidthPriority": 0, "labels": []any{}, "cookies": ""})
 }
+
+func TestStartAddedTorrents(t *testing.T) {
+	env := newEnv(t, Options{})
+	// transmission-remote --start-paused sends this before torrent-add.
+	env.mustSucceed(t, "session-set", map[string]any{"start-added-torrents": false})
+	torrent, _ := makeTorrent(t, "p.bin", 1000, 16384)
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent)})
+	if st := env.torrents(t, map[string]any{"fields": []any{"status"}})[0]["status"]; st != float64(statusStopped) {
+		t.Errorf("start-added-torrents=false must add paused, status %v", st)
+	}
+	// An explicit "paused" wins over the session setting.
+	torrent2, _ := makeTorrent(t, "q.bin", 1000, 16384)
+	env.mustSucceed(t, "torrent-add", map[string]any{"metainfo": b64(torrent2), "paused": false})
+	if st := env.torrents(t, map[string]any{"ids": []any{2}, "fields": []any{"status"}})[0]["status"]; st == float64(statusStopped) {
+		t.Errorf("paused=false must start the torrent")
+	}
+	if got := env.mustSucceed(t, "session-get", map[string]any{"fields": []any{"start-added-torrents"}}); got["start-added-torrents"] != false {
+		t.Errorf("session-get must report the setting: %v", got)
+	}
+}

@@ -286,6 +286,9 @@ type Engine struct {
 
 	// PEXEnabled allows BEP 0011 peer exchange for public torrents.
 	PEXEnabled bool
+	// StartAddedTorrents starts torrents added without an explicit "paused" (Transmission's
+	// start-added-torrents).
+	StartAddedTorrents bool
 
 	// Session-wide limiters, kept in sync with the settings above by applyLimitsLocked.
 	sessionDown      *bandwidth.Limiter
@@ -353,26 +356,27 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
-		announceKey:      binary.BigEndian.Uint32(key[:]),
-		timing:           defaultTiming(),
-		AltSpeedDown:     50,
-		AltSpeedUp:       50,
-		SeedRatioLimit:   2,
-		IdleSeedingLimit: 30,
-		PEXEnabled:       true,
-		sessionDown:      bandwidth.NewLimiter(),
-		sessionUp:        bandwidth.NewLimiter(),
-		stats:            sessionStats{started: time.Now()},
-		ctx:              ctx,
-		cancel:           cancel,
-		PeerID:           peerID,
-		Port:             port,
-		DownloadDir:      downloadDir,
-		ConfigDir:        "./config",
-		torrents:         make(map[[20]byte]*ManagedTorrent),
-		nextID:           1,
-		listenerStopChan: make(chan struct{}),
-		verifySem:        make(chan struct{}, 1),
+		announceKey:        binary.BigEndian.Uint32(key[:]),
+		timing:             defaultTiming(),
+		AltSpeedDown:       50,
+		AltSpeedUp:         50,
+		SeedRatioLimit:     2,
+		IdleSeedingLimit:   30,
+		PEXEnabled:         true,
+		StartAddedTorrents: true,
+		sessionDown:        bandwidth.NewLimiter(),
+		sessionUp:          bandwidth.NewLimiter(),
+		stats:              sessionStats{started: time.Now()},
+		ctx:                ctx,
+		cancel:             cancel,
+		PeerID:             peerID,
+		Port:               port,
+		DownloadDir:        downloadDir,
+		ConfigDir:          "./config",
+		torrents:           make(map[[20]byte]*ManagedTorrent),
+		nextID:             1,
+		listenerStopChan:   make(chan struct{}),
+		verifySem:          make(chan struct{}, 1),
 	}
 }
 
