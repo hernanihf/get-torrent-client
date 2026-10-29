@@ -84,6 +84,7 @@ func TestEventCodes(t *testing.T) {
 type fakeUDPTracker struct {
 	conn      *net.UDPConn
 	dropFirst int
+	peer6     bool // answer with an 18-byte IPv6 peer, as over an IPv6 socket
 
 	mu        sync.Mutex
 	received  int
@@ -150,7 +151,12 @@ func (f *fakeUDPTracker) serve() {
 			out = binary.BigEndian.AppendUint32(out, 1800) // interval
 			out = binary.BigEndian.AppendUint32(out, 4)    // leechers
 			out = binary.BigEndian.AppendUint32(out, 9)    // seeders
-			out = append(out, 10, 0, 0, 1, 0x1A, 0xE1)     // 10.0.0.1:6881
+			if f.peer6 {
+				out = append(out, net.ParseIP("2001:db8::1").To16()...)
+				out = append(out, 0x1A, 0xE1)
+			} else {
+				out = append(out, 10, 0, 0, 1, 0x1A, 0xE1) // 10.0.0.1:6881
+			}
 		default:
 			continue
 		}
@@ -255,5 +261,42 @@ func TestUDPAnnounceTrackerError(t *testing.T) {
 	_, err := UDPAnnounceContext(context.Background(), AnnounceParams{AnnounceURL: f.url()})
 	if !errors.Is(err, ErrTrackerFailure) || !containsSubstring(err.Error(), "torrent not registered") {
 		t.Errorf("expected tracker failure, got %v", err)
+	}
+}
+
+func TestHTTPAnnouncePeers6(t *testing.T) {
+	v6 := append(net.ParseIP("2001:db8::7").To16(), 0x1A, 0xE1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := bencode.Encode(map[string]any{"interval": 60, "peers": "\x0a\x00\x00\x01\x1a\xe1", "peers6": string(v6)})
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	resp, err := AnnounceContext(context.Background(), AnnounceParams{AnnounceURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Peers) != 2 || resp.Peers[0].String() != "10.0.0.1:6881" || resp.Peers[1].String() != "[2001:db8::7]:6881" {
+		t.Errorf("peers = %v", resp.Peers)
+	}
+	if _, err := UnmarshalPeers6(make([]byte, 17)); err == nil {
+		t.Error("a partial IPv6 entry must be rejected")
+	}
+}
+
+func TestUDPAnnounceOverIPv6(t *testing.T) {
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+	if err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	}
+	shortUDPTimeouts(t)
+	f := &fakeUDPTracker{conn: conn, peer6: true}
+	t.Cleanup(func() { _ = conn.Close() })
+	go f.serve()
+	resp, err := UDPAnnounceContext(context.Background(), AnnounceParams{AnnounceURL: f.url()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Peers) != 1 || resp.Peers[0].String() != "[2001:db8::1]:6881" {
+		t.Errorf("peers = %v", resp.Peers)
 	}
 }

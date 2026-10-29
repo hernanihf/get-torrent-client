@@ -149,6 +149,15 @@ func parseHTTPResponse(body []byte) (*AnnounceResponse, error) {
 		}
 	}
 
+	// BEP 0007: IPv6 peers come in a separate compact list.
+	if p6, ok := dict["peers6"].(string); ok && p6 != "" {
+		peers, err := UnmarshalPeers6([]byte(p6))
+		if err != nil {
+			return nil, fmt.Errorf("failed unmarshaling compact peers6: %w", err)
+		}
+		out.Peers = append(out.Peers, peers...)
+	}
+
 	return out, nil
 }
 

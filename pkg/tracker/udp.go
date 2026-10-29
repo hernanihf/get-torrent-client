@@ -164,9 +164,14 @@ func udpAnnounceOnce(ctx context.Context, conn net.Conn, connID uint64, params A
 	if len(resp) < 20 {
 		return nil, errors.New("udp announce response too short")
 	}
+	// BEP 0015: a tracker reached over IPv6 answers with 18-byte IPv6 peers.
+	unmarshal, size := UnmarshalPeers, 6
+	if raddr, ok := conn.RemoteAddr().(*net.UDPAddr); ok && raddr.IP.To4() == nil {
+		unmarshal, size = UnmarshalPeers6, 18
+	}
 	peersData := resp[20:]
-	peersData = peersData[:len(peersData)-len(peersData)%6] // ignore a truncated trailing entry
-	peers, err := UnmarshalPeers(peersData)
+	peersData = peersData[:len(peersData)-len(peersData)%size] // ignore a truncated trailing entry
+	peers, err := unmarshal(peersData)
 	if err != nil {
 		return nil, fmt.Errorf("unmarshaling udp peers: %w", err)
 	}

@@ -263,3 +263,41 @@ func TestTrackerStatsReportSwarmCounts(t *testing.T) {
 		t.Errorf("unexpected tracker stats: %+v", tr)
 	}
 }
+
+func TestDownloadFromIPv6Peer(t *testing.T) {
+	if l, err := net.Listen("tcp6", "[::1]:0"); err != nil {
+		t.Skipf("no IPv6 loopback: %v", err)
+	} else {
+		_ = l.Close()
+	}
+	payload := make([]byte, 100_000)
+	_, _ = rand.Read(payload)
+
+	seeder := newTestEngine(t)
+	if err := seeder.StartListener(); err != nil {
+		t.Fatal(err)
+	}
+	// The tracker only knows the seeder by its IPv6 address (BEP 0007 peers6).
+	v6 := binary.BigEndian.AppendUint16(net.IPv6loopback.To16(), seeder.Port)
+	tr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := bencode.Encode(map[string]any{"interval": 3600, "peers": "", "peers6": string(v6)})
+		_, _ = w.Write(body)
+	}))
+	defer tr.Close()
+
+	st := addWithTracker(t, seeder, payload, tr.URL+"/announce")
+	seedAll(t, st, payload)
+	if err := seeder.StartTorrent(st.ID); err != nil {
+		t.Fatal(err)
+	}
+	leecher := newTestEngine(t)
+	lt := addWithTracker(t, leecher, payload, tr.URL+"/announce")
+	if err := leecher.StartTorrent(lt.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "download over IPv6", func() bool { return lt.Status().PercentDone == 1 })
+	peers := lt.PeerList()
+	if len(peers) != 1 || !strings.Contains(peers[0].Address, ":") {
+		t.Errorf("expected one IPv6 peer, got %+v", peers)
+	}
+}

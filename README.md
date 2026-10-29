@@ -17,6 +17,7 @@ Expone una interfaz JSON-RPC idéntica a la de Transmission en el puerto `9091`,
 - **Decodificador y Codificador Bencode nativo**: Implementación completa y optimizada para metainfo (`.torrent`) y respuestas de trackers.
 - **Soporte Dual de Trackers**:
   - **HTTP/HTTPS Trackers**: Anuncios con soporte para respuestas compactas ([BEP 0023](https://www.bittorrent.org/beps/bep_0023.html)).
+  - **IPv6 ([BEP 0007](https://www.bittorrent.org/beps/bep_0007.html))**: Se leen los `peers6` compactos de trackers HTTP y los peers de 18 bytes de trackers UDP alcanzados por IPv6; el listener TCP es *dual-stack* y PEX intercambia peers IPv6.
   - **UDP Trackers ([BEP 0015](https://www.bittorrent.org/beps/bep_0015.html))**: Protocolo binario de baja latencia con transacción en 2 fases (`connect` y `announce`).
 - **Peer Wire Protocol ([BEP 0003](https://www.bittorrent.org/beps/bep_0003.html))**: Handshake estricto de 68 bytes, framing de mensajes, intercambio de bitfields y pipelining de bloques de 16 KiB.
 - **Magnet Links ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) / [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html))**: Descarga del diccionario `info` desde peers vía `ut_metadata`, verificación SHA-1 contra el `info_hash`, persistencia como `.torrent` en `config/torrents/` y servicio de metadatos a otros peers.
