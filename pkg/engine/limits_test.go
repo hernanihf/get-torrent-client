@@ -44,9 +44,9 @@ func newTransferPair(t *testing.T, size int) *transferPair {
 		t.Fatal(err)
 	}
 	seedAll(t, p.st, p.payload)
-	p.st.mu.Lock()
-	p.st.State = StateSeeding
-	p.st.mu.Unlock()
+	if err := p.seeder.StartTorrent(p.st.ID); err != nil { // seeds, with the choker running
+		t.Fatal(err)
+	}
 
 	p.leecher = NewEngine(t.TempDir(), 0)
 	p.leecher.ConfigDir = t.TempDir()

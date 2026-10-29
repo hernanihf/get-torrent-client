@@ -85,6 +85,8 @@ type peerInfo struct {
 	peerIsInterested   bool // the peer is interested in us
 	piecesHave         int
 	down, up           rateMeter
+	connected          time.Time // when the connection was registered
+	chokeReq           chan bool // choker decisions for the session: true = choke
 }
 
 // publish copies the session-owned connection state into the reportable snapshot.

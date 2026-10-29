@@ -61,6 +61,7 @@ type ManagedTorrent struct {
 	stopChan     chan struct{}
 	trackers     []string            // magnet trackers, used until metadata provides its own
 	metadata     *metadata.Assembler // non-nil while metadata is being fetched
+	metaReady    chan struct{}       // magnets only: closed once metadata is in place
 
 	startDate      time.Time
 	activityDate   time.Time
@@ -72,6 +73,7 @@ type ManagedTorrent struct {
 	trackerRecords map[string]*trackerRecord
 	nextAnnounce   time.Time
 	reannounce     chan struct{} // wakes the discovery loop early (torrent-reannounce)
+	rechoke        chan struct{} // wakes the choker early (interest changes, freed slots)
 	recheck        float64       // torrent-verify progress, 0..1
 	restartAfter   bool          // restart once verification finishes
 
@@ -373,6 +375,7 @@ func (e *Engine) addMeta(meta *metainfo.TorrentMeta, path, dir string) (*Managed
 		AddedDate:    time.Now(),
 		stopChan:     make(chan struct{}),
 		reannounce:   make(chan struct{}, 1),
+		rechoke:      make(chan struct{}, 1),
 		limits:       defaultTorrentLimits(),
 		downLimiter:  bandwidth.NewLimiter(),
 		upLimiter:    bandwidth.NewLimiter(),
@@ -430,6 +433,7 @@ func (e *Engine) StartTorrent(id int) error {
 	t.mu.Unlock()
 
 	go e.runTorrent(t, stop)
+	go e.runChoker(t, stop)
 	return nil
 }
 
@@ -738,10 +742,12 @@ func (e *Engine) registerConn(t *ManagedTorrent, conn *peer.Conn, source PeerSou
 	t.activeConns = append(t.activeConns, conn)
 
 	pi := &peerInfo{
-		addr:     conn.RemotePeer.String(),
-		port:     int(conn.RemotePeer.Port),
-		source:   source,
-		incoming: source == SourceIncoming,
+		addr:      conn.RemotePeer.String(),
+		port:      int(conn.RemotePeer.Port),
+		source:    source,
+		incoming:  source == SourceIncoming,
+		connected: time.Now(),
+		chokeReq:  make(chan bool, 1),
 	}
 	if conn.RemotePeer.IP != nil {
 		pi.ip = conn.RemotePeer.IP.String()
@@ -769,6 +775,9 @@ func (e *Engine) unregisterConn(t *ManagedTorrent, conn *peer.Conn) {
 			t.activeConns = append(t.activeConns[:i], t.activeConns[i+1:]...)
 			if t.ActivePeers > 0 {
 				t.ActivePeers--
+			}
+			if !conn.AmChoking {
+				t.requestRechoke() // an upload slot freed up
 			}
 			return
 		}

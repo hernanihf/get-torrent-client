@@ -60,6 +60,10 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 
 	t.mu.RLock()
 	stop := t.stopChan
+	var metaReady <-chan struct{} // nil (never ready) once metadata is known
+	if t.PieceManager == nil {
+		metaReady = t.metaReady
+	}
 	t.mu.RUnlock()
 
 	// Bandwidth throttling may block; it must end promptly on stop or disconnect.
@@ -114,12 +118,24 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 	ticker := time.NewTicker(peerTickInterval)
 	defer ticker.Stop()
 
+	var chokeReq <-chan bool // nil (never ready) for unregistered connections
+	if s.info != nil {
+		chokeReq = s.info.chokeReq
+	}
+
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
 			s.tick()
+		case choke := <-chokeReq:
+			s.applyChoke(choke)
+		case <-metaReady:
+			metaReady = nil
+			if s.attach() {
+				s.requestBlocks()
+			}
 		case msg, ok := <-msgs:
 			if !ok {
 				return
@@ -127,6 +143,9 @@ func (e *Engine) handlePeerMessages(t *ManagedTorrent, conn *peer.Conn) {
 			conn.UpdateState(msg)
 			s.handle(msg)
 			s.publish()
+			if msg.ID != nil && (*msg.ID == peer.MsgInterested || *msg.ID == peer.MsgNotInterested) {
+				t.requestRechoke() // after publish, so the choker sees the new interest
+			}
 		}
 	}
 }
@@ -214,11 +233,6 @@ func (s *peerSession) handle(msg *peer.Message) {
 	case peer.MsgChoke:
 		// A choking peer discards our pending requests.
 		s.inflight = 0
-
-	case peer.MsgInterested:
-		// Unchoke interested peer so we seed/upload to them
-		s.send(&peer.Message{ID: idPtr(peer.MsgUnchoke)})
-		s.conn.AmChoking = false
 
 	case peer.MsgHave:
 		if s.pm != nil && !justAttached {

@@ -53,6 +53,8 @@ func (e *Engine) addMagnet(uri, dir string) (*ManagedTorrent, error) {
 		AddedDate:   time.Now(),
 		stopChan:    make(chan struct{}),
 		reannounce:  make(chan struct{}, 1),
+		rechoke:     make(chan struct{}, 1),
+		metaReady:   make(chan struct{}),
 		limits:      defaultTorrentLimits(),
 		downLimiter: bandwidth.NewLimiter(),
 		upLimiter:   bandwidth.NewLimiter(),
@@ -142,6 +144,7 @@ func (e *Engine) onMetadata(t *ManagedTorrent, info []byte) error {
 	t.PieceManager = pm
 	t.Left = meta.TotalLength
 	t.metadata = nil
+	close(t.metaReady) // wakes sessions to start requesting pieces
 	t.mu.Unlock()
 	e.stats.filesAdded.Add(int64(len(meta.Files)))
 

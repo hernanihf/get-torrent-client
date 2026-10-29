@@ -113,6 +113,8 @@ func TestMagnetEndToEnd(t *testing.T) {
 	st.mu.Lock()
 	st.State = StateSeeding
 	st.mu.Unlock()
+	// Seed without peer discovery (no trackers), but with the choker that StartTorrent runs.
+	go seeder.runChoker(st, st.stopChan)
 	if err := seeder.StartListener(); err != nil {
 		t.Fatal(err)
 	}
