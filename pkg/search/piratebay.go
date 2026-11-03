@@ -123,7 +123,7 @@ func (p *PirateBayProvider) Search(ctx context.Context, query string) ([]Result,
 		return nil, fmt.Errorf("creating search request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "get-torrent/1.0 (+https://github.com/hernan/get-torrent)")
+	req.Header.Set("User-Agent", "get-torrent/1.0 (+https://github.com/hernanihf/get-torrent-client)")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.httpClient.Do(req)

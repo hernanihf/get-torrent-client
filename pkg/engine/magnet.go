@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/bandwidth"
-	"github.com/hernan/get-torrent/pkg/magnet"
-	"github.com/hernan/get-torrent/pkg/metadata"
-	"github.com/hernan/get-torrent/pkg/metainfo"
-	"github.com/hernan/get-torrent/pkg/peer"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/bandwidth"
+	"github.com/hernanihf/get-torrent-client/pkg/magnet"
+	"github.com/hernanihf/get-torrent-client/pkg/metadata"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // AddMagnet registers a torrent from a magnet URI. Its metadata is fetched from peers

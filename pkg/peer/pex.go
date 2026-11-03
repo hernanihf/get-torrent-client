@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 // BEP 0011 peer exchange. A ut_pex message lists the peers the sender connected to ("added")

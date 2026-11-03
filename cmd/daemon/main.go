@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/dht"
-	"github.com/hernan/get-torrent/pkg/engine"
-	"github.com/hernan/get-torrent/pkg/rpc"
+	"github.com/hernanihf/get-torrent-client/pkg/dht"
+	"github.com/hernanihf/get-torrent-client/pkg/engine"
+	"github.com/hernanihf/get-torrent-client/pkg/rpc"
 )
 
 func main() {

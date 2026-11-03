@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/hernan/get-torrent/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
 )
 
 var (

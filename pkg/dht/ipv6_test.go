@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 func TestIPv6CompactFormats(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/hernan/get-torrent/pkg/metainfo"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // FileSelection is the per-file download choice (Transmission's files-wanted and priority-*).

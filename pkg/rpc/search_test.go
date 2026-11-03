@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hernan/get-torrent/pkg/search"
+	"github.com/hernanihf/get-torrent-client/pkg/search"
 )
 
 type mockSearchProvider struct {

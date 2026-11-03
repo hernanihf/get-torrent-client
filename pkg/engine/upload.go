@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/hernan/get-torrent/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
 )
 
 // maxUploadQueue caps the block requests queued from one peer; we advertise it as "reqq"

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
 )
 
 // makeMultiFileTorrent builds a .torrent with three 1000-byte files in one 16 KiB piece.

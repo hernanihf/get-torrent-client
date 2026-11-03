@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/metainfo"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // TorrentStateEntry records persistent resume data for a torrent.

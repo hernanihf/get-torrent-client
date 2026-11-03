@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/engine"
+	"github.com/hernanihf/get-torrent-client/pkg/engine"
 )
 
 // sessionGet implements "session-get", honouring the optional "fields" filter (rpc-version 16).

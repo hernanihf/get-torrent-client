@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
 )
 
 // transferPair is a seeder with complete data and a leecher that finds it via a fake tracker.

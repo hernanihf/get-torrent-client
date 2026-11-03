@@ -4,3 +4,8 @@ config/
 **/config/
 .DS_Store
 *.tmp
+
+# Editor and local agent tooling
+.idea/
+.claude/
+.mcp.json

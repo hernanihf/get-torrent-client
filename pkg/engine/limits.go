@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hernan/get-torrent/pkg/bandwidth"
+	"github.com/hernanihf/get-torrent-client/pkg/bandwidth"
 )
 
 // SpeedUnit is the number of bytes in Transmission's speed "kB" (its "speed-bytes" unit).

@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/peer"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // rateWindow is the averaging window, in seconds, for transfer rates (Transmission uses ~2 s).

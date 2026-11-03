@@ -7,8 +7,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/peer"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 const (

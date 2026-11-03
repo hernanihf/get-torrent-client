@@ -15,10 +15,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hernan/get-torrent/pkg/engine"
-	"github.com/hernan/get-torrent/pkg/search"
-	"github.com/hernan/get-torrent/pkg/storage"
-	"github.com/hernan/get-torrent/pkg/webui"
+	"github.com/hernanihf/get-torrent-client/pkg/engine"
+	"github.com/hernanihf/get-torrent-client/pkg/search"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/webui"
 )
 
 const (

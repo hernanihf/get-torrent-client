@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/engine"
-	"github.com/hernan/get-torrent/pkg/search"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/engine"
+	"github.com/hernanihf/get-torrent-client/pkg/search"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // Transmission torrent status codes (tr_torrent_activity). We never queue, so the "wait"

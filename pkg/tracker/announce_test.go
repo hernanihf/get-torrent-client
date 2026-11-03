@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
 )
 
 func TestHTTPAnnounceParamsAndResponseFields(t *testing.T) {

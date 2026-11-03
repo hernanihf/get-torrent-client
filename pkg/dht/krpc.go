@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 const (

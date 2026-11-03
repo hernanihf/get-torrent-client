@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/magnet"
-	"github.com/hernan/get-torrent/pkg/metainfo"
-	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernanihf/get-torrent-client/pkg/magnet"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // maxTorrentFetchSize bounds .torrent downloads from URLs.

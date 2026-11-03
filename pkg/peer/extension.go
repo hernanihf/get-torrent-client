@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
 )
 
 // MsgExtended is the BEP 0010 extension protocol message ID.

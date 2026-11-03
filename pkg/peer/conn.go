@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 var (

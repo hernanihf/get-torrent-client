@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/dht"
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/dht"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 // Peer discovery scheduling. Each tracker has its own schedule, as in Transmission: the first

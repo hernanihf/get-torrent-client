@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
 )
 
 // Choking algorithm (BEP 0003 "Choking and optimistic unchoking"). Every chokeInterval the

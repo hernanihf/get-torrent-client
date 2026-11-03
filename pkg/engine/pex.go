@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/peer"
-	"github.com/hernan/get-torrent/pkg/tracker"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
 
 // Peer exchange (BEP 0011): every pexInterval each peer that supports ut_pex is told which

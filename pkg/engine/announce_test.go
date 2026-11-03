@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
-	"github.com/hernan/get-torrent/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
 )
 
 // announceLog is one request received by recordingTracker.

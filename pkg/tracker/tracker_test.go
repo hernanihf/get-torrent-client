@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
 )
 
 type mockTransport func(req *http.Request) (*http.Response, error)

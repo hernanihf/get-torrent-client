@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
-	"github.com/hernan/get-torrent/pkg/engine"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/engine"
 )
 
 const testMagnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=ubuntu.iso&tr=udp%3A%2F%2Ftracker.example.org%3A1337"

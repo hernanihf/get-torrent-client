@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hernan/get-torrent/pkg/bencode"
-	"github.com/hernan/get-torrent/pkg/dht"
-	"github.com/hernan/get-torrent/pkg/metainfo"
-	"github.com/hernan/get-torrent/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/bencode"
+	"github.com/hernanihf/get-torrent-client/pkg/dht"
+	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/peer"
 )
 
 // newDHTEngine creates an engine with a peer listener and a DHT node bootstrapped from boot.

@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hernan/get-torrent/pkg/dht"
+	"github.com/hernanihf/get-torrent-client/pkg/dht"
 )
 
 // dhtState is the persisted DHT identity and routing table, so restarts rejoin quickly.
