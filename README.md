@@ -3,6 +3,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org)
 [![BitTorrent](https://img.shields.io/badge/BitTorrent-BEP%200003%20%7C%200015%20%7C%200023-blue)](https://www.bittorrent.org/beps/bep_0000.html)
 [![Transmission RPC](https://img.shields.io/badge/Transmission%20RPC-v17%20Compatible-red)](https://github.com/transmission/transmission/blob/main/docs/rpc-spec.md)
+[![CI](https://github.com/hernanihf/get-torrent-client/actions/workflows/ci.yml/badge.svg)](https://github.com/hernanihf/get-torrent-client/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `get-torrent` es un cliente y daemon BitTorrent de alto rendimiento, modular y ligero escrito en **Go**, diseñado como una reimplementación moderna compatible con el ecosistema de **Transmission**.
@@ -49,10 +50,11 @@ Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialect
 - **Ciclo de vida**: `torrent-start`, `torrent-start-now`, `torrent-stop`, `torrent-remove` (con `delete-local-data`), `torrent-verify` (re-chequeo SHA-1 de los datos en disco) y `torrent-reannounce`.
 - **Sesión**: `session-get` (todas las claves, con filtro `fields`), `session-set`, `session-stats` (estadísticas actuales y acumuladas entre reinicios), `free-space`, `port-test` y `session-close` (apagado ordenado).
 - **Límites de velocidad**: límites de sesión (`speed-limit-down/up`), velocidades alternativas o *turtle mode* (`alt-speed-*`) y límites por torrent (`downloadLimit`/`uploadLimit` y `honorsSessionLimits` vía `torrent-set`), en kB/s de 1000 bytes como Transmission. Se aplican con *token buckets*: la subida espera antes de enviar cada bloque y la bajada pausa la lectura del socket para que el control de flujo de TCP frene al peer. Un límite activo de 0 pausa la transferencia.
-- **Ajustes honestos**: `session-set` aplica `download-dir`, los límites de velocidad y de siembra, `pex-enabled` y `start-added-torrents` (que decide si `torrent-add` sin `paused` inicia el torrent); si se pide cambiar un ajuste que get-torrent no implementa (p. ej. `pex-enabled`, `encryption`, `alt-speed-time-*`) responde con error nombrando las claves y no aplica nada. Repetir el valor que informa `session-get` se acepta, así las GUIs que envían todo el diálogo de preferencias siguen funcionando; las claves desconocidas o de solo lectura se ignoran como en Transmission.
+- **Ajustes honestos**: `session-set` aplica `download-dir`, los límites de velocidad y de siembra, `pex-enabled` y `start-added-torrents` (que decide si `torrent-add` sin `paused` inicia el torrent); si se pide cambiar un ajuste que get-torrent no implementa (p. ej. `encryption`, `alt-speed-time-*`, `download-queue-*`) responde con error nombrando las claves y no aplica nada. Repetir el valor que informa `session-get` se acepta, así las GUIs que envían todo el diálogo de preferencias siguen funcionando; las claves desconocidas o de solo lectura se ignoran como en Transmission.
 - **Selección de archivos y prioridades**: `files-wanted`/`files-unwanted` y `priority-high/normal/low` en `torrent-add` y `torrent-set` (lista vacía = todos los archivos). Las piezas de archivos no deseados no se piden; las de mayor prioridad van primero y, dentro de una prioridad, las más raras. Al completar lo seleccionado el torrent pasa a sembrar (*partial seed*) y vuelve a descargar si se seleccionan más archivos. `percentDone`, `sizeWhenDone`, `leftUntilDone`, `wanted`, `priorities` y `fileStats` reflejan la selección, que se guarda en `state.json`. Los archivos no deseados igual se pre-asignan en disco.
 - **Límites de siembra**: `seedRatioLimit`/`seedRatioLimited` e `idle-seeding-limit`/`idle-seeding-limit-enabled` de sesión, y por torrent `seedRatioMode`/`seedIdleMode` (0 = sesión, 1 = propio, 2 = ilimitado) con sus límites vía `torrent-set`. Al alcanzar el ratio (subido / descargado, o / tamaño si se agregó completo) o el tiempo sin subir datos, el torrent se detiene e informa `isFinished`; iniciarlo a mano desactiva su ratio, como Transmission. `eta` al sembrar indica el tiempo hasta el ratio y `etaIdle` el restante hasta el límite de inactividad.
 - **No soportado aún**: `torrent-set`/`torrent-add` rechazan con error los cambios a `labels`, `group`, `bandwidthPriority`, `peer-limit`, `queuePosition`, `location`, `cookies` y `tracker*` (repetir el valor que informa `torrent-get` o enviar una lista vacía se acepta); `torrent-set-location`, `torrent-rename-path`, `blocklist-update` y `group-*` devuelven error; el horario automático del *turtle mode* (`alt-speed-time-*`) no está implementado.
+- **`torrent-search` (extensión propia, no está en el spec de Transmission)**: recibe `{"query": "..."}` y devuelve `results` con `name`, `infoHash`, `magnetLink`, `size`, `seeders`, `leechers`, `category` y `provider`. La búsqueda la resuelven proveedores enchufables (`search.Provider`); el que viene por defecto consulta la API pública de `apibay.org`. Los magnets generados incluyen una lista de trackers públicos.
 - **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`. Cada torrent guarda su *bitfield* de piezas verificadas junto con el tamaño y la fecha de modificación de sus archivos; al arrancar se restaura sin re-hashear si los archivos no cambiaron. Si cambiaron (o no hay *bitfield*, o se cortó un chequeo), los datos en disco se re-chequean (SHA-1 por pieza) antes de reanudar, de a un torrent por vez como la cola de verificación de Transmission.
 
 ---
@@ -139,7 +141,10 @@ curl -s -X POST http://127.0.0.1:9091/transmission/rpc \
   -d '{"method":"torrent-add","arguments":{"filename":"/ruta/a/archivo.torrent"}}' | jq
 ```
 
-### 3. Usar `transmission-remote`
+### 3. WebUI
+El daemon sirve un dashboard web embebido en el binario en `http://127.0.0.1:9091/transmission/web/` (también en `/`). Usa la misma autenticación y el mismo token CSRF que el RPC, refresca la lista cada 2 s y permite agregar torrents o magnets, iniciarlos, detenerlos, borrarlos y buscar con `torrent-search`.
+
+### 4. Usar `transmission-remote`
 ```bash
 transmission-remote 127.0.0.1:9091 -a "magnet:?xt=urn:btih:..."   # añadir
 transmission-remote 127.0.0.1:9091 -l                            # listar
@@ -160,8 +165,10 @@ También podés conectar directamente cualquier cliente como **Transmission Remo
 El proyecto cuenta con una cobertura integral de pruebas unitarias y de integración en memoria para todos los subsistemas:
 
 ```bash
-go test -v ./...
+go test -race ./...
 ```
+
+El workflow de CI (`.github/workflows/ci.yml`) corre `gofmt`, `go vet`, el build y los tests con `-race` en Linux y macOS en cada push y pull request.
 
 Paquetes testeados:
 - `pkg/bencode`: Codificación y decodificación de enteros, cadenas con prefijo, listas y diccionarios ordenados.
@@ -173,6 +180,7 @@ Paquetes testeados:
 - `pkg/engine`: Persistencia atómica de sesión (`SaveState` / `LoadState`) y descarga end-to-end desde un magnet entre dos engines reales.
 - `pkg/peer`, `pkg/metadata`: Mensajes BEP 0010/0009 y ensamblado/verificación de metadatos.
 - `pkg/dht`: KRPC, tabla de ruteo, tokens, paquetes falsificados/malformados, red de 30 nodos en localhost y ausencia de fugas de goroutines; en `pkg/engine`, descarga end-to-end de un magnet sin trackers vía DHT.
+- `pkg/search`: parseo de respuestas del indexador, filtrado de resultados vacíos y armado de magnets; en `pkg/rpc`, el método `torrent-search` y el servicio de la WebUI.
 - `pkg/metainfo`: Info-hash sobre bytes crudos, `announce-list` y rechazo de rutas inseguras (`..`, absolutas).
 
 ---
@@ -197,7 +205,13 @@ Consulta [AGENTS.md](AGENTS.md) para más detalles sobre las reglas del equipo y
 - [x] **Fase 4: Magnet Links & DHT**
   - [x] **4a – Magnet Links**: Parser de enlaces magnet (`magnet:?xt=...`), Extension Protocol ([BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)) y descarga/servicio de metadatos `ut_metadata` ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)).
   - [x] **4b – Kademlia DHT** ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)): descubrimiento de peers sin trackers, `announce_peer` y mensaje `PORT`.
-- [ ] **Fase 5: Clientes & WebUI**: CLI nativo (`get-torrent-cli`) y Web Dashboard interactivo integrado en el daemon.
+- [x] **Fase 5: Clientes & WebUI**: Web Dashboard interactivo embebido en el daemon y búsqueda de torrents (`torrent-search`). No hay un CLI propio: el daemon es compatible con `transmission-remote`, que cumple ese rol.
+
+### Pendiente para una próxima versión
+- Cifrado de conexiones MSE/PE (`encryption`): hoy solo se habla texto plano.
+- uTP ([BEP 0029](https://www.bittorrent.org/beps/bep_0029.html)).
+- Cola de descargas (`download-queue-*`, `queue-move-*`), blocklist, `torrent-set-location`, `torrent-rename-path`, labels y grupos de ancho de banda.
+- Horario automático del *turtle mode* (`alt-speed-time-*`).
 
 ---
 
