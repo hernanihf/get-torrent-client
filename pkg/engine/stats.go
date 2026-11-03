@@ -290,7 +290,9 @@ func (t *ManagedTorrent) TrackerList() []TrackerStatus {
 			}
 			seen[u] = true
 			ts := TrackerStatus{ID: len(out), Announce: u, Tier: tier, LastAnnouncePeerCount: 0}
-			if rec := t.trackerRecords[u]; rec != nil {
+			// A record exists as soon as the first announce is in flight; it only counts as
+			// announced once a response (or failure) has been recorded.
+			if rec := t.trackerRecords[u]; rec != nil && !rec.time.IsZero() {
 				ts.HasAnnounced = true
 				ts.LastAnnounceTime = rec.time.Unix()
 				ts.LastAnnounceSucceeded = rec.succeeded

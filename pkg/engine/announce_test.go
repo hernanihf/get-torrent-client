@@ -264,6 +264,23 @@ func TestTrackerStatsReportSwarmCounts(t *testing.T) {
 	}
 }
 
+// An announce that is still in flight must not be reported as announced: before the fix, the
+// record created when the request went out made TrackerList report HasAnnounced with a zero time.
+func TestTrackerStatsInFlightAnnounceIsNotAnnounced(t *testing.T) {
+	e := newTestEngine(t)
+	mt := addWithTracker(t, e, make([]byte, 1000), "http://127.0.0.1:1/announce")
+	if due := mt.dueAnnounces(time.Now(), false); len(due) != 1 {
+		t.Fatalf("expected the first announce to be due, got %d", len(due))
+	}
+	tr := mt.TrackerList()[0]
+	if tr.HasAnnounced || tr.LastAnnounceTime != 0 || tr.LastAnnounceSucceeded {
+		t.Errorf("an in-flight announce must not count as announced: %+v", tr)
+	}
+	if tr.SeederCount != -1 || tr.LeecherCount != -1 {
+		t.Errorf("counts must stay unknown until the tracker answers: %+v", tr)
+	}
+}
+
 func TestDownloadFromIPv6Peer(t *testing.T) {
 	if l, err := net.Listen("tcp6", "[::1]:0"); err != nil {
 		t.Skipf("no IPv6 loopback: %v", err)
