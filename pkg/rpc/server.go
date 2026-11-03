@@ -16,7 +16,9 @@ import (
 	"sync"
 
 	"github.com/hernan/get-torrent/pkg/engine"
+	"github.com/hernan/get-torrent/pkg/search"
 	"github.com/hernan/get-torrent/pkg/storage"
+	"github.com/hernan/get-torrent/pkg/webui"
 )
 
 const (
@@ -58,6 +60,8 @@ type Options struct {
 	OnSessionClose func()
 	// PortChecker reports whether the peer port is reachable from the Internet ("port-test").
 	PortChecker func(port uint16) (bool, error)
+	// SearchManager overrides the default search manager used for torrent searches.
+	SearchManager *search.Manager
 }
 
 // Server provides Transmission-compatible RPC endpoints backed by the engine.
@@ -67,6 +71,7 @@ type Server struct {
 	addr      string
 	engine    *engine.Engine
 	opts      Options
+	searchMgr *search.Manager
 }
 
 // NewServer creates a new RPC server instance bound to an engine.
@@ -81,11 +86,16 @@ func NewServerWithOptions(addr string, eng *engine.Engine, opts Options) *Server
 	if opts.PortChecker == nil {
 		opts.PortChecker = checkPortOnline
 	}
+	searchMgr := opts.SearchManager
+	if searchMgr == nil {
+		searchMgr = search.NewManager()
+	}
 	return &Server{
 		sessionID: hex.EncodeToString(token),
 		addr:      addr,
 		engine:    eng,
 		opts:      opts,
+		searchMgr: searchMgr,
 	}
 }
 
@@ -95,12 +105,35 @@ func (s *Server) Handler() http.Handler {
 	// transmission-remote posts to "/transmission/rpc/" (trailing slash); other clients omit it.
 	mux.HandleFunc("/transmission/rpc", s.handleRPC)
 	mux.HandleFunc("/transmission/rpc/", s.handleRPC)
+
+	webHandler := http.StripPrefix("/transmission/web", webui.Handler())
+	mux.HandleFunc("/transmission/web/", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorize(w, r) {
+			return
+		}
+		webHandler.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/transmission/web", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorize(w, r) {
+			return
+		}
+		http.Redirect(w, r, "/transmission/web/", http.StatusMovedPermanently)
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorize(w, r) {
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, "<h1>get-torrent (Transmission Clone)</h1><p>RPC endpoint active at <code>/transmission/rpc</code></p>")
+		if r.URL.Path == "/" {
+			index, err := webui.IndexHTML()
+			if err == nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(index)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	})
 	return mux
 }
@@ -214,6 +247,7 @@ var methods = map[string]handlerFunc{
 	"torrent-verify":       forEach(func(e *engine.Engine, id int) error { return e.VerifyTorrent(id) }),
 	"torrent-reannounce":   forEach(func(e *engine.Engine, id int) error { return e.Reannounce(id) }),
 	"torrent-remove":       (*Server).torrentRemove,
+	"torrent-search":       (*Server).torrentSearch,
 	"queue-move-top":       noQueue,
 	"queue-move-up":        noQueue,
 	"queue-move-down":      noQueue,

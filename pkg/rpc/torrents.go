@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hernan/get-torrent/pkg/engine"
+	"github.com/hernan/get-torrent/pkg/search"
 	"github.com/hernan/get-torrent/pkg/storage"
 )
 
@@ -624,4 +626,27 @@ func (s *Server) torrentAdd(args map[string]any) (map[string]any, error) {
 	}
 	_ = s.engine.SaveState()
 	return map[string]any{"torrent-added": info}, nil
+}
+
+// torrentSearch searches online indexers for torrents matching "query".
+func (s *Server) torrentSearch(args map[string]any) (map[string]any, error) {
+	query, _ := args["query"].(string)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return map[string]any{"results": []search.Result{}}, nil
+	}
+	if s.searchMgr == nil {
+		return nil, fmt.Errorf("search manager not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	results, err := s.searchMgr.Search(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+	if results == nil {
+		results = []search.Result{}
+	}
+	return map[string]any{"results": results}, nil
 }

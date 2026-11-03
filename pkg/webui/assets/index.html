@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>get-torrent | Transmission Web Control</title>
+  <link rel="stylesheet" href="/transmission/web/style.css">
+  <meta name="rpc-endpoint" content="/transmission/rpc">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="logo">⚡ get-torrent</h1>
+        <span class="version-badge">Transmission RPC v17</span>
+      </div>
+      <div class="header-center">
+        <div class="stat-pill" title="Current Download Speed">
+          <span class="stat-icon down">↓</span>
+          <span id="stat-down-speed">0.0 KB/s</span>
+        </div>
+        <div class="stat-pill" title="Current Upload Speed">
+          <span class="stat-icon up">↑</span>
+          <span id="stat-up-speed">0.0 KB/s</span>
+        </div>
+        <div class="stat-pill" title="Free Disk Space">
+          <span class="stat-icon disk">💾</span>
+          <span id="stat-free-space">Checking...</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button id="btn-search-torrent" class="btn btn-secondary" title="Search Torrents Online">🔍 Search</button>
+        <button id="btn-add-torrent" class="btn btn-primary" title="Add a new torrent">➕ Add Torrent</button>
+        <button id="btn-start-all" class="btn btn-secondary" title="Start all torrents">▶️ Start All</button>
+        <button id="btn-stop-all" class="btn btn-secondary" title="Pause all torrents">⏸️ Pause All</button>
+        <button id="btn-settings" class="btn btn-icon" title="Session Settings">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Toolbar -->
+    <section class="toolbar">
+      <div class="filters">
+        <button class="filter-tab active" data-filter="all">All <span id="count-all" class="badge">0</span></button>
+        <button class="filter-tab" data-filter="downloading">Downloading <span id="count-downloading" class="badge">0</span></button>
+        <button class="filter-tab" data-filter="seeding">Seeding <span id="count-seeding" class="badge">0</span></button>
+        <button class="filter-tab" data-filter="paused">Paused <span id="count-paused" class="badge">0</span></button>
+      </div>
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="🔍 Filter torrents by name..." autocomplete="off">
+      </div>
+    </section>
+
+    <!-- Main Content: Torrent List -->
+    <main class="content-area">
+      <div class="table-container">
+        <table class="torrent-table">
+          <thead>
+            <tr>
+              <th class="col-name">Name</th>
+              <th class="col-status">Status</th>
+              <th class="col-size">Size</th>
+              <th class="col-progress">Progress</th>
+              <th class="col-speed">Down / Up</th>
+              <th class="col-peers">Peers</th>
+              <th class="col-eta">ETA</th>
+              <th class="col-actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="torrent-list">
+            <!-- Dynamically populated rows -->
+          </tbody>
+        </table>
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">📥</div>
+          <h3>No torrents loaded</h3>
+          <p>Click <strong>"➕ Add Torrent"</strong> above to load a .torrent file or paste a magnet link.</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer Status -->
+    <footer class="app-footer">
+      <div class="footer-status">
+        <span id="connection-status" class="status-online">● Connected to /transmission/rpc</span>
+      </div>
+      <div class="footer-info">
+        <span id="session-download-dir">Download Dir: -</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Add Torrent Modal -->
+  <div id="modal-add" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Add New Torrent</h2>
+        <button class="modal-close" data-close="modal-add">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="magnet-input">Magnet Link or URL:</label>
+          <textarea id="magnet-input" rows="3" placeholder="magnet:?xt=urn:btih:..."></textarea>
+        </div>
+        <div class="form-divider"><span>OR</span></div>
+        <div class="form-group">
+          <label for="torrent-file-input">Select .torrent File:</label>
+          <input type="file" id="torrent-file-input" accept=".torrent">
+        </div>
+        <div class="form-group">
+          <label for="add-download-dir">Destination Directory:</label>
+          <input type="text" id="add-download-dir" placeholder="Default session directory">
+        </div>
+        <div class="form-checkbox">
+          <label>
+            <input type="checkbox" id="add-start-now" checked> Start download immediately
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="modal-add">Cancel</button>
+        <button id="btn-submit-add" class="btn btn-primary">Add Torrent</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="modal-settings" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Session Settings</h2>
+        <button class="modal-close" data-close="modal-settings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="setting-download-dir">Default Download Directory:</label>
+          <input type="text" id="setting-download-dir">
+        </div>
+        <div class="form-group">
+          <label>Bandwidth Limits:</label>
+          <div class="limit-row">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="setting-limit-down-enabled"> Speed Limit Down (KB/s):
+            </label>
+            <input type="number" id="setting-limit-down" min="0" step="10">
+          </div>
+          <div class="limit-row">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="setting-limit-up-enabled"> Speed Limit Up (KB/s):
+            </label>
+            <input type="number" id="setting-limit-up" min="0" step="10">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Peer Port Diagnostics:</label>
+          <div class="port-row">
+            <span id="setting-peer-port">Peer Port: -</span>
+            <button id="btn-test-port" class="btn btn-sm btn-secondary">Test Port</button>
+            <span id="port-test-result" class="port-result"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="modal-settings">Cancel</button>
+        <button id="btn-submit-settings" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remove Torrent Modal -->
+  <div id="modal-remove" class="modal-overlay hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2>Remove Torrent</h2>
+        <button class="modal-close" data-close="modal-remove">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Are you sure you want to remove <strong id="remove-torrent-name">-</strong>?</p>
+        <div class="form-checkbox">
+          <label>
+            <input type="checkbox" id="remove-delete-data"> Also delete downloaded files from disk
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="modal-remove">Cancel</button>
+        <button id="btn-confirm-remove" class="btn btn-danger">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Search Torrents Modal -->
+  <div id="modal-search" class="modal-overlay hidden">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h2>🔍 Search Torrents (The Pirate Bay)</h2>
+        <button class="modal-close" data-close="modal-search">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="search-input-row">
+          <input type="text" id="indexer-search-input" placeholder="Search movies, linux, music, software..." autocomplete="off">
+          <button id="btn-execute-search" class="btn btn-primary">Search</button>
+        </div>
+        <div id="search-spinner" class="search-spinner hidden">
+          <span class="spinner"></span> Searching indexer...
+        </div>
+        <div class="search-results-container">
+          <table class="torrent-table search-results-table">
+            <thead>
+              <tr>
+                <th style="width: 45%;">Title</th>
+                <th style="width: 15%;">Category</th>
+                <th style="width: 12%;">Size</th>
+                <th style="width: 10%;">Seeds</th>
+                <th style="width: 8%;">Leech</th>
+                <th style="width: 10%; text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="search-results-list">
+              <!-- Dynamically populated rows -->
+            </tbody>
+          </table>
+          <div id="search-empty-state" class="empty-state">
+            <p>Enter a keyword above to find torrents.</p>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-close="modal-search">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/transmission/web/app.js"></script>
+</body>
+</html>
