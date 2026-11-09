@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1f2430" />
+      <stop offset="100%" stop-color="#111318" />
+    </linearGradient>
+    <linearGradient id="boltGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#58a6ff" />
+      <stop offset="50%" stop-color="#3fb950" />
+      <stop offset="100%" stop-color="#2ea043" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Base container with rounded corners -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bgGrad)" stroke="#388bfd" stroke-width="2.5" stroke-opacity="0.8" />
+
+  <!-- Download tray / cradle -->
+  <path d="M16 44 L16 48 C16 50.2 17.8 52 20 52 L44 52 C46.2 52 48 50.2 48 48 L48 44" fill="none" stroke="#58a6ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
+
+  <!-- Stylized Lightning / Torrent arrow -->
+  <path d="M34 10 L20 32 L31 32 L27 46 L45 24 L33 24 Z" fill="url(#boltGrad)" filter="url(#glow)" />
+</svg>

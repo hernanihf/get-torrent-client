@@ -54,6 +54,20 @@ func TestWebUIEndpoints(t *testing.T) {
 			bodyContains: "/transmission/web/",
 		},
 		{
+			name:         "WebUI favicon svg",
+			url:          "http://127.0.0.1:9091/transmission/web/favicon.svg",
+			expectedCode: http.StatusOK,
+			expectedType: "image/svg+xml",
+			bodyContains: "<svg",
+		},
+		{
+			name:         "Root favicon ico redirect",
+			url:          "http://127.0.0.1:9091/favicon.ico",
+			expectedCode: http.StatusMovedPermanently,
+			expectedType: "",
+			bodyContains: "/transmission/web/favicon.svg",
+		},
+		{
 			name:         "NotFound for unknown subpath",
 			url:          "http://127.0.0.1:9091/nonexistent",
 			expectedCode: http.StatusNotFound,

@@ -119,9 +119,25 @@ func (s *Server) Handler() http.Handler {
 		}
 		http.Redirect(w, r, "/transmission/web/", http.StatusMovedPermanently)
 	})
+	mux.HandleFunc("/transmission", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorize(w, r) {
+			return
+		}
+		http.Redirect(w, r, "/transmission/web/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/transmission/", func(w http.ResponseWriter, r *http.Request) {
+		if !s.authorize(w, r) {
+			return
+		}
+		http.Redirect(w, r, "/transmission/web/", http.StatusMovedPermanently)
+	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if !s.authorize(w, r) {
+			return
+		}
+		if r.URL.Path == "/favicon.ico" {
+			http.Redirect(w, r, "/transmission/web/favicon.svg", http.StatusMovedPermanently)
 			return
 		}
 		if r.URL.Path == "/" {
@@ -197,7 +213,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderSessionID, currentSessionID)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusConflict)
-		fmt.Fprintf(w, "<h1>409: Conflict</h1><p>Your request is missing the %s header.</p>", HeaderSessionID)
+		fmt.Fprintf(w, "<h1>409: Conflict</h1><p>Your request is missing the %s header.</p><p>To access the Web Interface, visit <a href=\"/transmission/web/\">/transmission/web/</a></p>", HeaderSessionID)
 		return
 	}
 

@@ -63,6 +63,14 @@ body {
   gap: 12px;
 }
 
+.app-logo-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  display: inline-block;
+  vertical-align: middle;
+}
+
 .logo {
   font-size: 1.25rem;
   font-weight: 700;
