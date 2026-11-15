@@ -17,6 +17,7 @@ import (
 	"github.com/hernanihf/get-torrent-client/pkg/metadata"
 	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
 	"github.com/hernanihf/get-torrent-client/pkg/peer"
+	"github.com/hernanihf/get-torrent-client/pkg/security"
 	"github.com/hernanihf/get-torrent-client/pkg/storage"
 	"github.com/hernanihf/get-torrent-client/pkg/tracker"
 )
@@ -39,29 +40,32 @@ const (
 // Storage and PieceManager stay nil until the info dictionary is fetched from peers (BEP 0009).
 // Fields that change after creation must be read under mu (see Status and components).
 type ManagedTorrent struct {
-	ID           int
-	Meta         *metainfo.TorrentMeta
-	TorrentPath  string
-	MagnetURI    string
-	Storage      *storage.Storage
-	PieceManager *storage.PieceManager
-	State        TorrentState
-	Downloaded   int64
-	Uploaded     int64
-	Left         int64
-	Peers        []tracker.Peer
-	ActivePeers  int
-	LastError    string
-	DownloadDir  string
-	CorruptEver  int64 // bytes discarded because their piece failed SHA-1 verification
-	AddedDate    time.Time
-	DoneDate     time.Time
-	activeConns  []*peer.Conn
-	dialing      map[string]bool // peer addresses with an outbound dial in progress
-	stopChan     chan struct{}
-	trackers     []string            // magnet trackers, used until metadata provides its own
-	metadata     *metadata.Assembler // non-nil while metadata is being fetched
-	metaReady    chan struct{}       // magnets only: closed once metadata is in place
+	ID                int
+	Meta              *metainfo.TorrentMeta
+	TorrentPath       string
+	MagnetURI         string
+	Storage           *storage.Storage
+	PieceManager      *storage.PieceManager
+	State             TorrentState
+	Downloaded        int64
+	Uploaded          int64
+	Left              int64
+	Peers             []tracker.Peer
+	ActivePeers       int
+	LastError         string
+	DownloadDir       string
+	CorruptEver       int64 // bytes discarded because their piece failed SHA-1 verification
+	AddedDate         time.Time
+	DoneDate          time.Time
+	SecurityStatus    string
+	SecurityThreat    string
+	SecurityScannedAt time.Time
+	activeConns       []*peer.Conn
+	dialing           map[string]bool // peer addresses with an outbound dial in progress
+	stopChan          chan struct{}
+	trackers          []string            // magnet trackers, used until metadata provides its own
+	metadata          *metadata.Assembler // non-nil while metadata is being fetched
+	metaReady         chan struct{}       // magnets only: closed once metadata is in place
 
 	startDate      time.Time
 	activityDate   time.Time
@@ -163,6 +167,8 @@ type TorrentStatus struct {
 	ActivityDate            int64
 	SecondsDownloading      int64
 	SecondsSeeding          int64
+	SecurityStatus          string
+	SecurityThreat          string
 }
 
 func unix(t time.Time) int64 {
@@ -203,6 +209,8 @@ func (t *ManagedTorrent) Status() TorrentStatus {
 		DoneDate:        unix(t.DoneDate),
 		StartDate:       unix(t.startDate),
 		ActivityDate:    unix(t.activityDate),
+		SecurityStatus:  t.SecurityStatus,
+		SecurityThreat:  t.SecurityThreat,
 	}
 	secDown, secSeed := t.secondsDown, t.secondsSeed
 	if !t.stateSince.IsZero() {
@@ -219,6 +227,9 @@ func (t *ManagedTorrent) Status() TorrentStatus {
 
 	if st.Name == "" {
 		st.Name = hex.EncodeToString(st.InfoHash[:])
+	}
+	if st.SecurityStatus == "" {
+		st.SecurityStatus = security.StatusPending
 	}
 	switch {
 	case st.Error == "":
@@ -316,6 +327,8 @@ type Engine struct {
 	saveMu sync.Mutex     // serializes SaveState (periodic and shutdown saves share the files)
 	bg     sync.WaitGroup // background loops that Close waits for before stopping torrents
 
+	securityScanner *security.Scanner
+
 	timing engineTiming
 
 	announceKey uint32         // tracker "key": identifies this client across IP changes
@@ -377,6 +390,7 @@ func NewEngine(downloadDir string, port uint16) *Engine {
 		nextID:             1,
 		listenerStopChan:   make(chan struct{}),
 		verifySem:          make(chan struct{}, 1),
+		securityScanner:    security.NewScanner(security.DefaultConfig()),
 	}
 }
 
@@ -822,4 +836,73 @@ func (e *Engine) Close() error {
 		return fmt.Errorf("errors closing engine: %v", errs)
 	}
 	return nil
+}
+
+// SecurityScanner returns the active security scanner instance.
+func (e *Engine) SecurityScanner() *security.Scanner {
+	return e.securityScanner
+}
+
+// ScanTorrent triggers a security analysis of all files belonging to t.
+// If threats are detected, the configured ActionOnThreat is executed.
+func (e *Engine) ScanTorrent(t *ManagedTorrent) security.Report {
+	if e.securityScanner == nil {
+		return security.Report{Status: security.StatusSkipped}
+	}
+
+	t.mu.Lock()
+	t.SecurityStatus = security.StatusScanning
+	storage := t.Storage
+	name := ""
+	if t.Meta != nil {
+		name = t.Meta.Name
+	}
+	t.mu.Unlock()
+
+	if storage == nil || len(storage.Files) == 0 {
+		t.mu.Lock()
+		t.SecurityStatus = security.StatusClean
+		t.SecurityScannedAt = time.Now()
+		t.mu.Unlock()
+		return security.Report{Status: security.StatusClean, ScannedAt: time.Now()}
+	}
+
+	filePaths := make([]string, 0, len(storage.Files))
+	for _, f := range storage.Files {
+		filePaths = append(filePaths, f.FullPath)
+	}
+
+	log.Printf("[Security] Starting security scan for completed torrent %q (%d files)...", name, len(filePaths))
+	rep := e.securityScanner.ScanFiles(filePaths)
+
+	t.mu.Lock()
+	t.SecurityStatus = rep.Status
+	t.SecurityThreat = rep.ThreatName
+	t.SecurityScannedAt = rep.ScannedAt
+	t.mu.Unlock()
+
+	if rep.Status == security.StatusThreatDetected {
+		action := e.securityScanner.GetConfig().ActionOnThreat
+		log.Printf("[Security] ⚠️ THREAT DETECTED in torrent %q: %s. Action configured: %s", name, rep.ThreatName, action)
+		switch action {
+		case security.ActionPause:
+			log.Printf("[Security] 🛑 Action: Pausing torrent %q (ID %d) due to threat %q", name, t.ID, rep.ThreatName)
+			_ = e.StopTorrent(t.ID)
+		case security.ActionQuarantine:
+			log.Printf("[Security] ☣️ Action: Quarantining infected files for torrent %q (ID %d)", name, t.ID)
+			_ = e.StopTorrent(t.ID)
+			for _, file := range rep.AffectedFiles {
+				quarantinePath := file + ".quarantine"
+				if err := os.Rename(file, quarantinePath); err == nil {
+					log.Printf("[Security] Quarantined file: %s -> %s", file, quarantinePath)
+				}
+			}
+		case security.ActionWarn:
+			log.Printf("[Security] ⚠️ Action: Warning logged for torrent %q (ID %d), download continues", name, t.ID)
+		}
+	} else if rep.Status == security.StatusClean {
+		log.Printf("[Security] ✅ Torrent %q verified clean.", name)
+	}
+
+	return rep
 }

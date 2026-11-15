@@ -16,9 +16,22 @@ import (
 )
 
 func main() {
-	rpcAddr := flag.String("rpc-addr", "127.0.0.1:9091", "Address for Transmission RPC server")
-	downloadDir := flag.String("download-dir", "./downloads", "Directory to save completed torrents")
-	configDir := flag.String("config-dir", "./config", "Directory to store session state and resume data")
+	defaultRPCAddr := "127.0.0.1:9091"
+	if env := os.Getenv("RPC_ADDR"); env != "" {
+		defaultRPCAddr = env
+	}
+	defaultDownloadDir := "./downloads"
+	if env := os.Getenv("DOWNLOAD_DIR"); env != "" {
+		defaultDownloadDir = env
+	}
+	defaultConfigDir := "./config"
+	if env := os.Getenv("CONFIG_DIR"); env != "" {
+		defaultConfigDir = env
+	}
+
+	rpcAddr := flag.String("rpc-addr", defaultRPCAddr, "Address for Transmission RPC server")
+	downloadDir := flag.String("download-dir", defaultDownloadDir, "Directory to save completed torrents")
+	configDir := flag.String("config-dir", defaultConfigDir, "Directory to store session state and resume data")
 	port := flag.Uint("port", 6881, "BitTorrent peer listen port (TCP; the DHT uses the same UDP port)")
 	dhtEnabled := flag.Bool("dht", true, "Enable the Mainline DHT (BEP 0005) for trackerless peer discovery")
 	dhtBootstrap := flag.String("dht-bootstrap", strings.Join(dht.DefaultBootstrap, ","), "Comma-separated DHT bootstrap routers (host:port)")

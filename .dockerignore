@@ -1,0 +1,8 @@
+.git
+bin/
+*.tmp
+downloads/
+config/
+*.md
+.github/
+.agents/

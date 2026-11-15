@@ -11,23 +11,26 @@ import (
 	"time"
 
 	"github.com/hernanihf/get-torrent-client/pkg/metainfo"
+	"github.com/hernanihf/get-torrent-client/pkg/security"
 	"github.com/hernanihf/get-torrent-client/pkg/storage"
 )
 
 // TorrentStateEntry records persistent resume data for a torrent.
 type TorrentStateEntry struct {
-	ID          int            `json:"id"`
-	InfoHashHex string         `json:"info_hash"`
-	TorrentPath string         `json:"torrent_path"`
-	MagnetURI   string         `json:"magnet_uri,omitempty"`
-	State       TorrentState   `json:"state"`
-	Downloaded  int64          `json:"downloaded"`
-	Uploaded    int64          `json:"uploaded"`
-	CorruptEver int64          `json:"corrupt,omitempty"`
-	DownloadDir string         `json:"download_dir,omitempty"`
-	AddedDate   int64          `json:"added_date,omitempty"`
-	DoneDate    int64          `json:"done_date,omitempty"`
-	Limits      *TorrentLimits `json:"limits,omitempty"`
+	ID             int            `json:"id"`
+	InfoHashHex    string         `json:"info_hash"`
+	TorrentPath    string         `json:"torrent_path"`
+	MagnetURI      string         `json:"magnet_uri,omitempty"`
+	State          TorrentState   `json:"state"`
+	Downloaded     int64          `json:"downloaded"`
+	Uploaded       int64          `json:"uploaded"`
+	CorruptEver    int64          `json:"corrupt,omitempty"`
+	DownloadDir    string         `json:"download_dir,omitempty"`
+	AddedDate      int64          `json:"added_date,omitempty"`
+	DoneDate       int64          `json:"done_date,omitempty"`
+	SecurityStatus string         `json:"security_status,omitempty"`
+	SecurityThreat string         `json:"security_threat,omitempty"`
+	Limits         *TorrentLimits `json:"limits,omitempty"`
 	// Per-file selection; absent means every file wanted at normal priority.
 	FilesWanted  []bool `json:"files_wanted,omitempty"`
 	FilePriority []int8 `json:"file_priority,omitempty"`
@@ -114,18 +117,20 @@ func (e *Engine) SaveState() error {
 			}
 		}
 		entry := TorrentStateEntry{
-			ID:          t.ID,
-			InfoHashHex: hex.EncodeToString(t.Meta.InfoHash[:]),
-			TorrentPath: t.TorrentPath,
-			MagnetURI:   t.MagnetURI,
-			State:       saved,
-			Downloaded:  t.Downloaded,
-			Uploaded:    t.Uploaded,
-			CorruptEver: t.CorruptEver,
-			DownloadDir: t.DownloadDir,
-			AddedDate:   unix(t.AddedDate),
-			DoneDate:    unix(t.DoneDate),
-			Limits:      &limits,
+			ID:             t.ID,
+			InfoHashHex:    hex.EncodeToString(t.Meta.InfoHash[:]),
+			TorrentPath:    t.TorrentPath,
+			MagnetURI:      t.MagnetURI,
+			State:          saved,
+			Downloaded:     t.Downloaded,
+			Uploaded:       t.Uploaded,
+			CorruptEver:    t.CorruptEver,
+			DownloadDir:    t.DownloadDir,
+			AddedDate:      unix(t.AddedDate),
+			DoneDate:       unix(t.DoneDate),
+			SecurityStatus: t.SecurityStatus,
+			SecurityThreat: t.SecurityThreat,
+			Limits:         &limits,
 		}
 		if t.files.valid(len(t.Meta.Files)) {
 			entry.FilesWanted, entry.FilePriority = t.files.Wanted, t.files.Priority
@@ -276,6 +281,8 @@ func (e *Engine) LoadState() error {
 		if entry.DoneDate > 0 {
 			t.DoneDate = time.Unix(entry.DoneDate, 0)
 		}
+		t.SecurityStatus = entry.SecurityStatus
+		t.SecurityThreat = entry.SecurityThreat
 		if entry.Limits != nil {
 			t.limits = *entry.Limits
 			t.applyLimits(t.limits)
@@ -353,6 +360,10 @@ type Settings struct {
 
 	PEXEnabled         bool
 	StartAddedTorrents bool
+
+	SecurityEnabled        bool
+	SecurityClamAVAddr     string
+	SecurityActionOnThreat string
 }
 
 // Settings returns a consistent copy of the session settings.
@@ -380,6 +391,20 @@ func (e *Engine) settingsLocked() Settings {
 
 		PEXEnabled:         e.PEXEnabled,
 		StartAddedTorrents: e.StartAddedTorrents,
+
+		SecurityEnabled: e.securityScanner != nil && e.securityScanner.GetConfig().Enabled,
+		SecurityClamAVAddr: func() string {
+			if e.securityScanner != nil {
+				return e.securityScanner.GetConfig().ClamAVAddr
+			}
+			return ""
+		}(),
+		SecurityActionOnThreat: func() string {
+			if e.securityScanner != nil {
+				return e.securityScanner.GetConfig().ActionOnThreat
+			}
+			return ""
+		}(),
 	}
 }
 
@@ -397,5 +422,12 @@ func (e *Engine) UpdateSettings(fn func(*Settings)) {
 	e.IdleSeedingLimit, e.IdleSeedingLimitEnabled = st.IdleSeedingLimit, st.IdleSeedingLimitEnabled
 	e.PEXEnabled = st.PEXEnabled
 	e.StartAddedTorrents = st.StartAddedTorrents
+	if e.securityScanner != nil {
+		e.securityScanner.UpdateConfig(security.Config{
+			Enabled:        st.SecurityEnabled,
+			ClamAVAddr:     st.SecurityClamAVAddr,
+			ActionOnThreat: st.SecurityActionOnThreat,
+		})
+	}
 	e.applyLimitsLocked()
 }

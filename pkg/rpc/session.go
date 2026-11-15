@@ -89,6 +89,9 @@ func (s *Server) sessionValues() map[string]any {
 		"script-torrent-done-filename":         "",
 		"script-torrent-done-seeding-enabled":  false,
 		"script-torrent-done-seeding-filename": "",
+		"security-action-on-threat":            settings.SecurityActionOnThreat,
+		"security-clamav-addr":                 settings.SecurityClamAVAddr,
+		"security-enabled":                     settings.SecurityEnabled,
 		"seed-queue-enabled":                   false,
 		"seed-queue-size":                      10,
 		"seedRatioLimit":                       settings.SeedRatioLimit,
@@ -122,6 +125,7 @@ var settableSessionKeys = map[string]bool{
 	"seedRatioLimit": true, "seedRatioLimited": true,
 	"idle-seeding-limit": true, "idle-seeding-limit-enabled": true,
 	"pex-enabled": true, "start-added-torrents": true,
+	"security-enabled": true, "security-clamav-addr": true, "security-action-on-threat": true,
 }
 
 // readOnlySessionKeys are session-get keys that clients cannot set; Transmission ignores them.
@@ -226,6 +230,15 @@ func (s *Server) sessionSet(args map[string]any) (map[string]any, error) {
 		}
 		if v, ok := args["start-added-torrents"].(bool); ok {
 			st.StartAddedTorrents = v
+		}
+		if v, ok := args["security-enabled"].(bool); ok {
+			st.SecurityEnabled = v
+		}
+		if v, ok := args["security-clamav-addr"].(string); ok {
+			st.SecurityClamAVAddr = v
+		}
+		if v, ok := args["security-action-on-threat"].(string); ok {
+			st.SecurityActionOnThreat = v
 		}
 	})
 	_ = s.engine.SaveState()

@@ -53,6 +53,22 @@
     }
   }
 
+  function securityBadge(t) {
+    const status = t.securityStatus || 'pending';
+    switch (status) {
+      case 'clean':
+        return '<span class="security-badge clean" title="Verified Clean">🛡️ Clean</span>';
+      case 'threat_detected':
+        return `<span class="security-badge threat" title="${escapeHtml(t.securityThreat || 'Unknown threat')}">🚨 ${escapeHtml(t.securityThreat || 'Threat')}</span>`;
+      case 'scanning':
+        return '<span class="security-badge scanning">🔍 Scanning…</span>';
+      case 'skipped':
+        return '<span class="security-badge skipped" title="Security scan skipped">⏭️ Skipped</span>';
+      default:
+        return '';
+    }
+  }
+
   // Core Transmission RPC Client
   async function rpcCall(method, args = {}) {
     const body = JSON.stringify({ method, arguments: args, tag: Date.now() });
@@ -93,7 +109,8 @@
           fields: [
             'id', 'name', 'status', 'totalSize', 'percentDone',
             'rateDownload', 'rateUpload', 'leftUntilDone', 'peersConnected',
-            'uploadedEver', 'downloadedEver', 'eta', 'metadataPercentComplete', 'magnetLink'
+            'uploadedEver', 'downloadedEver', 'eta', 'metadataPercentComplete', 'magnetLink',
+            'securityStatus', 'securityThreat'
           ]
         }),
         rpcCall('session-get')
@@ -181,7 +198,7 @@
         <tr data-id="${t.id}">
           <td class="col-name">
             <div class="torrent-title" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
-            <div class="torrent-sub">${formatBytes(t.downloadedEver || 0)} of ${formatBytes(t.totalSize)}</div>
+            <div class="torrent-sub">${formatBytes(t.downloadedEver || 0)} of ${formatBytes(t.totalSize)} ${securityBadge(t)}</div>
           </td>
           <td class="col-status">
             <span class="status-pill ${st.key}">${st.label}</span>
@@ -339,6 +356,10 @@
       document.getElementById('setting-limit-up-enabled').checked = !!session['speed-limit-up-enabled'];
       document.getElementById('setting-peer-port').textContent = `Peer Port: ${session['peer-port'] || '-'}`;
       document.getElementById('port-test-result').textContent = '';
+      // Security settings
+      document.getElementById('setting-security-enabled').checked = !!session['security-enabled'];
+      document.getElementById('setting-security-clamav-addr').value = session['security-clamav-addr'] || '';
+      document.getElementById('setting-security-action').value = session['security-action-on-threat'] || 'pause';
       openModal('modal-settings');
     });
 
@@ -366,6 +387,9 @@
       const downEnabled = document.getElementById('setting-limit-down-enabled').checked;
       const upLimit = parseInt(document.getElementById('setting-limit-up').value, 10) * 1024;
       const upEnabled = document.getElementById('setting-limit-up-enabled').checked;
+      const securityEnabled = document.getElementById('setting-security-enabled').checked;
+      const securityClamAVAddr = document.getElementById('setting-security-clamav-addr').value.trim();
+      const securityAction = document.getElementById('setting-security-action').value;
 
       try {
         await rpcCall('session-set', {
@@ -373,7 +397,10 @@
           'speed-limit-down': downLimit,
           'speed-limit-down-enabled': downEnabled,
           'speed-limit-up': upLimit,
-          'speed-limit-up-enabled': upEnabled
+          'speed-limit-up-enabled': upEnabled,
+          'security-enabled': securityEnabled,
+          'security-clamav-addr': securityClamAVAddr,
+          'security-action-on-threat': securityAction
         });
         closeModal('modal-settings');
         await refreshData();

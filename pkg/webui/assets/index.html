@@ -161,6 +161,27 @@
             <span id="port-test-result" class="port-result"></span>
           </div>
         </div>
+        <hr class="form-divider-line">
+        <div class="form-group">
+          <label>🛡️ Security Scanning:</label>
+          <div class="limit-row">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="setting-security-enabled"> Enable security scanning on download completion
+            </label>
+          </div>
+          <div class="limit-row">
+            <label for="setting-security-clamav-addr">ClamAV Address:</label>
+            <input type="text" id="setting-security-clamav-addr" placeholder="clamav:3310">
+          </div>
+          <div class="limit-row">
+            <label for="setting-security-action">Action on Threat:</label>
+            <select id="setting-security-action">
+              <option value="pause">Pause torrent</option>
+              <option value="quarantine">Quarantine files</option>
+              <option value="warn">Warn only (continue)</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" data-close="modal-settings">Cancel</button>

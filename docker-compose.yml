@@ -1,0 +1,48 @@
+# ============================================================
+# get-torrent  —  Docker Compose
+# ============================================================
+# Usage:
+#   docker compose up -d         # start all services
+#   docker compose logs -f       # view logs
+#   docker compose down          # stop all
+# ============================================================
+
+services:
+  get-torrent:
+    build: .
+    container_name: get-torrent
+    restart: unless-stopped
+    ports:
+      - "9091:9091"       # RPC + WebUI
+      - "6881:6881"       # BitTorrent TCP
+      - "6881:6881/udp"   # DHT UDP
+    volumes:
+      - ~/Downloads/get-torrent:/downloads
+      - ./config:/config
+    environment:
+      - ANTIVIRUS_ADDR=clamav:3310
+    depends_on:
+      clamav:
+        condition: service_started
+    networks:
+      - torrent-net
+
+  clamav:
+    image: clamav/clamav:stable
+    container_name: get-torrent-clamav
+    restart: unless-stopped
+    # ClamAV updates virus definitions on startup (~200 MB RAM during update).
+    # The clamd TCP socket is exposed on port 3310 inside the Docker network.
+    expose:
+      - "3310"
+    volumes:
+      - clamav-db:/var/lib/clamav
+    networks:
+      - torrent-net
+
+volumes:
+  clamav-db:
+
+networks:
+  torrent-net:
+    driver: bridge

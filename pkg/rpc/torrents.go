@@ -272,6 +272,8 @@ var torrentFields = map[string]func(c *fieldCtx) any{
 	"recheckProgress":    func(c *fieldCtx) any { return c.st.RecheckProgress },
 	"secondsDownloading": func(c *fieldCtx) any { return c.st.SecondsDownloading },
 	"secondsSeeding":     func(c *fieldCtx) any { return c.st.SecondsSeeding },
+	"securityStatus":     func(c *fieldCtx) any { return c.st.SecurityStatus },
+	"securityThreat":     func(c *fieldCtx) any { return c.st.SecurityThreat },
 	"seedIdleLimit":      func(c *fieldCtx) any { return c.t.Limits().SeedIdleLimit },
 	"seedIdleMode":       func(c *fieldCtx) any { return c.t.Limits().SeedIdleMode },
 	"seedRatioLimit":     func(c *fieldCtx) any { return c.t.Limits().SeedRatioLimit },

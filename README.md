@@ -57,6 +57,15 @@ Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialect
 - **`torrent-search` (extensión propia, no está en el spec de Transmission)**: recibe `{"query": "..."}` y devuelve `results` con `name`, `infoHash`, `magnetLink`, `size`, `seeders`, `leechers`, `category` y `provider`. La búsqueda la resuelven proveedores enchufables (`search.Provider`); el que viene por defecto consulta la API pública de `apibay.org`. Los magnets generados incluyen una lista de trackers públicos.
 - **Persistencia de Sesión (Resume Data)**: Guardado y recuperación atómica de descargas previas en `config/state.json`. Cada torrent guarda su *bitfield* de piezas verificadas junto con el tamaño y la fecha de modificación de sus archivos; al arrancar se restaura sin re-hashear si los archivos no cambiaron. Si cambiaron (o no hay *bitfield*, o se cortó un chequeo), los datos en disco se re-chequean (SHA-1 por pieza) antes de reanudar, de a un torrent por vez como la cola de verificación de Transmission.
 
+### 🛡️ Seguridad y Análisis Antivirus (Dual-Layer)
+- **Filtro Heurístico Nativo en Go**: Inspección estática instantánea sin dependencias externas. Detecta ejecutables camuflados analizando *magic bytes* (PE/MZ de Windows, ELF de Linux, Mach-O de macOS) escondidos bajo extensiones de medios o documentos (`.mp4`, `.mkv`, `.pdf`, `.mp3`, `.jpg`, `.png`, etc.), extensiones dobles engañosas (`.mp4.exe`, `.pdf.vbs`) y extensiones de alto riesgo (`.lnk`, `.ps1`, `.command`, etc.).
+- **Conector ClamAV por TCP Streaming**: Protocolo `zINSTREAM\0` para análisis antivirus profundo en memoria conectándose al daemon ClamAV (puerto `3310`) sin necesidad de compartir volúmenes en disco. Si ClamAV no está disponible, opera con degradación suave (*graceful degradation*) manteniendo activas las heurísticas nativas.
+- **Acciones Automáticas Configurables**: Respuesta inmediata al detectar malware o camuflaje:
+  - `pause`: Detiene el torrent de inmediato para evitar propagación o apertura accidental.
+  - `quarantine`: Aísla los archivos infectados renombrándolos con extensión `.quarantine` y pausa el torrent.
+  - `warn`: Registra la alerta en los logs y la interfaz, permitiendo continuar la siembra.
+- **Indicadores en Tiempo Real**: Exposición en RPC Transmission (`securityStatus`, `securityThreat`) y badges visuales en la WebUI (`🛡️ Clean`, `🚨 Threat: <nombre>`, `🔍 Scanning…`, `⏭️ Skipped`). Los ajustes de seguridad son configurables en caliente vía `session-set` y desde el modal de ajustes de la WebUI.
+
 ---
 
 ## 🏗️ Arquitectura del Sistema
@@ -85,6 +94,48 @@ Implementa el protocolo RPC de **Transmission 4.0.x** (`rpc-version` 17, dialect
              ▼                      ▼                        ▼
       Trackers P2P              Swarm Peers            Disco Local
    (ubuntu.com, etc)        (TCP Data Blocks)         (./downloads)
+```
+
+### 🛡️ Esquema de Seguridad y Análisis Post-Descarga
+
+```
+                               ┌────────────────────────────────┐
+                               │     Descarga BitTorrent        │
+                               │       100% Completada          │
+                               └───────────────┬────────────────┘
+                                               │
+                                               ▼
+                               ┌────────────────────────────────┐
+                               │    Post-Completion Hook        │
+                               │      (pkg/engine/session)      │
+                               └───────────────┬────────────────┘
+                                               │
+                                               ▼
+                               ┌────────────────────────────────┐
+                               │    pkg/security Dual Scanner   │
+                               └───────┬────────────────┬───────┘
+                                       │                │
+                      ┌────────────────┴────┐      ┌────┴─────────────────┐
+                      │   Capa 1: Nativa    │      │   Capa 2: ClamAV     │
+                      │ Heurísticas en Go   │      │ Protocolo zINSTREAM  │
+                      │ (Magic Bytes, Ext)  │      │ (Docker Daemon :3310)│
+                      └────────┬────────────┘      └────┬─────────────────┘
+                               │                        │
+                               └───────────┬────────────┘
+                                           │
+                      ┌────────────────────┴────────────────────┐
+                      ▼                                         ▼
+             [ Amenaza Detectada ]                         [ Limpio ]
+                      │                                         │
+     ┌────────────────┼────────────────┐                        ▼
+     ▼                ▼                ▼                 Status: "clean"
+ Acción "pause"  Acción "quarantine" Acción "warn"       Badge: 🛡️ Clean
+ (StopTorrent)   (.quarantine file)  (Log warning)
+     │                │                │
+     └────────────────┴────────────────┴────────────────────────┐
+                                                                ▼
+                                                    RPC: securityStatus
+                                                    WebUI: Badge / Alerta
 ```
 
 ---
@@ -158,6 +209,26 @@ transmission-remote 127.0.0.1:9091 --exit                        # apagar el dae
 
 También podés conectar directamente cualquier cliente como **Transmission Remote GUI** configurando Host: `127.0.0.1` y Puerto: `9091`.
 
+### 5. Despliegue con Docker y ClamAV (Recomendado)
+`get-torrent` incluye un entorno Docker multi-contenedor listo para producción con escaneo antivirus automatizado:
+
+```bash
+# Iniciar get-torrent y el daemon de ClamAV
+docker compose up -d
+
+# Ver logs en tiempo real
+docker compose logs -f get-torrent
+
+# Detener los servicios
+docker compose down
+```
+
+Características del despliegue Docker:
+- **Descargas directas en tu máquina**: Mapea automáticamente la carpeta `~/Downloads/get-torrent` del host al contenedor.
+- **Persistencia**: La configuración y estado de reanudación se conservan en `./config`.
+- **Aislamiento**: El daemon corre bajo un usuario no-root (`gettorrent`) en una imagen Alpine minimalista.
+- **Inspección en red**: `get-torrent` se comunica de forma interna con `clamav:3310` para escanear descargas mediante streaming TCP sin compartir discos físicos.
+
 ---
 
 ## 🧪 Pruebas Unitarias
@@ -182,6 +253,7 @@ Paquetes testeados:
 - `pkg/dht`: KRPC, tabla de ruteo, tokens, paquetes falsificados/malformados, red de 30 nodos en localhost y ausencia de fugas de goroutines; en `pkg/engine`, descarga end-to-end de un magnet sin trackers vía DHT.
 - `pkg/search`: parseo de respuestas del indexador, filtrado de resultados vacíos y armado de magnets; en `pkg/rpc`, el método `torrent-search` y el servicio de la WebUI.
 - `pkg/metainfo`: Info-hash sobre bytes crudos, `announce-list` y rechazo de rutas inseguras (`..`, absolutas).
+- `pkg/security`: Detección heurística de ejecutables camuflados (PE/ELF/Mach-O) y extensiones dobles, simulación del protocolo `zINSTREAM` de ClamAV y flujo de orquestación dual.
 
 ---
 
@@ -206,6 +278,12 @@ Consulta [AGENTS.md](AGENTS.md) para más detalles sobre las reglas del equipo y
   - [x] **4a – Magnet Links**: Parser de enlaces magnet (`magnet:?xt=...`), Extension Protocol ([BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)) y descarga/servicio de metadatos `ut_metadata` ([BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)).
   - [x] **4b – Kademlia DHT** ([BEP 0005](https://www.bittorrent.org/beps/bep_0005.html)): descubrimiento de peers sin trackers, `announce_peer` y mensaje `PORT`.
 - [x] **Fase 5: Clientes & WebUI**: Web Dashboard interactivo embebido en el daemon y búsqueda de torrents (`torrent-search`). No hay un CLI propio: el daemon es compatible con `transmission-remote`, que cumple ese rol.
+- [x] **Fase 6: Seguridad & Contenedorización**:
+  - [x] Filtro heurístico nativo en Go (inspección de cabeceras binarias PE/ELF/Mach-O y dobles extensiones).
+  - [x] Conector ClamAV por TCP streaming (`zINSTREAM\0`) con tolerancia a fallos.
+  - [x] Acciones automáticas configurables post-descarga (`pause`, `quarantine`, `warn`).
+  - [x] Indicadores dinámicos de seguridad en WebUI y RPC Transmission (`securityStatus`, `securityThreat`).
+  - [x] Empaquetado `Dockerfile` multi-stage y orquestación con `docker-compose.yml`.
 
 ### Pendiente para una próxima versión
 - Cifrado de conexiones MSE/PE (`encryption`): hoy solo se habla texto plano.

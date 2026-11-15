@@ -625,3 +625,76 @@ body {
   border-radius: 4px;
   font-size: 0.75rem;
 }
+
+
+/* Security Badges */
+.security-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.security-badge.clean {
+  background-color: rgba(46, 160, 67, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.3);
+}
+
+.security-badge.threat {
+  background-color: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  animation: threat-pulse 2s ease-in-out infinite;
+}
+
+.security-badge.scanning {
+  background-color: rgba(56, 132, 244, 0.15);
+  color: #58a6ff;
+  border: 1px solid rgba(56, 132, 244, 0.3);
+  animation: scan-pulse 1.5s ease-in-out infinite;
+}
+
+.security-badge.skipped {
+  background-color: rgba(139, 148, 158, 0.15);
+  color: var(--text-secondary);
+  border: 1px solid rgba(139, 148, 158, 0.2);
+}
+
+@keyframes threat-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes scan-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Security Settings */
+.form-divider-line {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+select {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  width: 100%;
+  max-width: 220px;
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 132, 244, 0.25);
+}

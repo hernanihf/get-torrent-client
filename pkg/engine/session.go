@@ -387,12 +387,17 @@ func (s *peerSession) handlePiece(msg *peer.Message) {
 
 		if s.pm.IsDone() {
 			s.t.mu.Lock()
+			justCompleted := false
 			if s.t.State == StateDownloading {
 				s.t.setStateLocked(StateSeeding)
 				s.t.downloadFinishedLocked()
 				log.Printf("[Engine] 🎉 Torrent %q download complete! Seeding now.", meta.Name)
+				justCompleted = true
 			}
 			s.t.mu.Unlock()
+			if justCompleted {
+				go s.e.ScanTorrent(s.t)
+			}
 		}
 	}
 
